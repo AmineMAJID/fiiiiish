@@ -1202,8 +1202,14 @@ function StartFishingFight(token, fightConfig)
 
     function GetAngleDelta()
         local camRot = GetGameplayCamRot(2).z
-        local angleToBobber = math.deg(math.atan(bobberCoords.y - pedCoords.y, bobberCoords.x - pedCoords.x)) - math.rad(camRot)
-        local diff = math.deg(angleToBobber)
+        -- IMPORTANT: everything below must be in the SAME unit before it is compared.
+        -- math.atan(y, x) returns RADIANS, while camRot is in DEGREES, so the two are
+        -- combined in radians and converted once, at the end. Converting the atan to
+        -- degrees first (and then converting the result again) multiplies the angle by
+        -- ~57 twice and yields values in the thousands of degrees, which is instantly
+        -- "absAngle > maxAngle" => the line snaps on the very first frame.
+        local angleToBobber = math.deg(math.atan(bobberCoords.y - pedCoords.y, bobberCoords.x - pedCoords.x) - math.rad(camRot))
+        local diff = angleToBobber
         if diff > 180 then
             diff = diff - 360
         elseif diff < -180 then

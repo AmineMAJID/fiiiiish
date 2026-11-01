@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Fichiers utilisateur / générés par le bot
+fishing_bot_config.json
+logs/
+debug/
+*.log
+
+# Le fichier d'exemple, lui, est versionné
+!config.example.json

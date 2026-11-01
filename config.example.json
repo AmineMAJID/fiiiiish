@@ -1,0 +1,86 @@
+{
+  "keys": {
+    "interact": "e",
+    "inventory": "tab",
+    "cancel": "esc",
+    "stop": "f12"
+  },
+  "timing": {
+    "charge_cycle_ms": 1100,
+    "charge_latency_ms": 10,
+    "charge_ready_delay_ms": 120,
+    "key_press_ms": 60,
+    "between_casts_ms": 1700,
+    "poll_interval_ms": 45,
+    "bite_min_s": 1.0,
+    "bite_timeout_s": 15.0,
+    "fight_timeout_s": 90.0,
+    "decision_timeout_s": 3.5,
+    "action_delay_ms": 300
+  },
+  "cast": {
+    "enabled": true,
+    "target_power": 0.86,
+    "power_tolerance": 0.04,
+    "min_power": 0.05,
+    "hold_offset_ms": 0,
+    "auto_calibrate": true,
+    "track": null,
+    "reference_size": null
+  },
+  "fight": {
+    "actuator": "mouse",
+    "mouse_step_px": 10,
+    "strafe_key_right": "d",
+    "strafe_key_left": "a",
+    "initial_dir": 1,
+    "min_progress_rate": 3.0,
+    "stall_flip_s": 1.5,
+    "danger_pause": true,
+    "crossing_boost": 1.8,
+    "max_step_px": 26
+  },
+  "decision": {
+    "choice": "keep",
+    "keep_rel": [
+      0.26,
+      0.78
+    ],
+    "release_rel": [
+      0.74,
+      0.78
+    ],
+    "bbox": null,
+    "modal_width_px": 644.0,
+    "modal_height_px": 503.0,
+    "right_margin_ratio": 0.02
+  },
+  "ui": {
+    "scale": 1.0,
+    "window_titles": [
+      "FiveM",
+      "Grand Theft Auto V"
+    ],
+    "monitor": 1,
+    "require_focus": true
+  },
+  "actions": {
+    "equip": [],
+    "resupply": [],
+    "sell": [],
+    "resupply_every": 0,
+    "sell_every": 0
+  },
+  "limits": {
+    "max_cycles": 0,
+    "max_consecutive_failures": 4,
+    "equip_retries": 2
+  },
+  "debug": {
+    "save_frames": false,
+    "save_every_state": false,
+    "screenshot_dir": "debug",
+    "log_dir": "logs",
+    "log_level": "INFO"
+  }
+}

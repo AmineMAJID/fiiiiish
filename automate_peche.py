@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """
 Script d'automatisation COMPLET pour le script de pêche FiveM (qs-fisher / fiiiiish)
-Version 4 : Simulation de clavier/souris (pyautogui + keyboard) pour automatiser le processus dans le jeu.
+Version 5 : Correction des touches (CLIC DROIT pour charger/lancer, E pour interagir/morsure/décision)
+et simulation de clavier/souris (pyautogui + keyboard) pour automatiser le processus.
 
 PROCESSUS :
 1. ATTENTE DE F11 (dans la fenêtre CMD/Console)
 2. Vérification (Simulation : on suppose le joueur prêt)
-3. Appuie sur 'E' (ou touche configurée) pour activer la canne (ToggleFishingRod)
+3. Appuie sur 'E' pour activer la canne (ToggleFishingRod)
 4. Recherche de l'eau (automatique dans le script FiveM, on attend le délai)
-5. Chargement de la puissance (maintien de la touche 'E' ou 'LMB' selon config)
-6. Lancement (relâchement de la touche)
-7. Attente de la morsure (BiteWindow ~ 1.5s - 4.5s)
-8. Combat (Simulation des mouvements de souris/clavier selon le danger/progrès)
-9. Décision (Garder/Relâcher via interface NUI - simulation touche 'E' ou 'Entrée')
+5. CHARGEMENT ET LANCEMENT : Maintient le CLIC DROIT (bouton 2) pendant ~1.1s (CHARGE_ANIM_DURATION) puis relâche (CastLineToWater)
+6. Attente de la morsure (BiteWindow ~ 1.5s - 4.5s)
+7. Ferrage : Appuie sur 'E' (InteractKey = 38) quand la morsure est détectée
+8. Combat (Simulation souris/clavier selon le danger/progrès)
+9. Décision : Garder/Relâcher via interface NUI (Appui sur 'E')
 10. Nettoyage (Fin du processus)
 
 AVERTISSEMENT :
 - Ce script nécessite les bibliothèques : pip install keyboard pyautogui
-- Il doit être lancé avec les privilèges administrateur (Windows) pour simuler les touches dans le jeu FiveM.
+- Il doit être lancé avec les privilèges administrateur (Windows) pour simuler les touches/souris dans le jeu FiveM.
 - Le jeu FiveM doit être en mode fenêtré ou bordureless pour que la souris fonctionne bien.
-- Assurez-vous que la touche de pêche est configurée (par défaut 'E' dans qs-fisher).
 """
 
 import time
@@ -39,7 +39,8 @@ except ImportError:
 
 # Configuration du script FiveM (qs-fisher)
 CONFIG = {
-    "INTERACT_KEY": "e",        # Touche pour activer la canne / mordre / décider (config qs-fisher)
+    "INTERACT_KEY": "e",        # Touche pour activer la canne (E) / mordre (E) / décider (E)
+    "CHARGE_KEY": "right",     # CLIC DROIT pour charger et lancer (Control ID 24)
     "FIGHT_LEFT": "a",          # Touche gauche (si configuré) ou mouvement souris
     "FIGHT_RIGHT": "d",         # Touche droite
     "MIN_BITE_TIME": 1.5,       # 1500ms
@@ -47,7 +48,8 @@ CONFIG = {
     "BITE_WINDOW": 3.0,         # Fenêtre de morsure
     "UPDATE_RATE": 0.05,        # 50ms
     "MAX_ANGLE": 70.0,
-    "F11_KEY": "f11"
+    "F11_KEY": "f11",
+    "CHARGE_ANIM_DURATION": 1.1 # CHARGE_ANIM_DURATION = 1100ms dans le script Lua
 }
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -73,17 +75,20 @@ class FishAutomationBot:
         time.sleep(1.5) # Temps pour l'animation de sortie de la canne
 
     def charge_and_cast(self):
-        """Charge la puissance et lance (Maintien E puis relâchement)"""
-        logging.info("Chargement de la puissance de lancer (Maintien E)...")
-        keyboard.press(CONFIG["INTERACT_KEY"])
-        # Simulation du cycle de charge (1.1s environ dans le script Lua)
-        charge_time = random.uniform(1.0, 1.1)
+        """Charge la puissance et lance (Maintien CLIC DROIT puis relâchement)"""
+        logging.info("Chargement de la puissance de lancer (Maintien CLIC DROIT)...")
+        # Control ID 24 = Bouton Souris Droite (Right Mouse Button)
+        pyautogui.mouseDown(button='right')
+        
+        # Simulation du cycle de charge (CHARGE_ANIM_DURATION = 1100ms)
+        charge_time = CONFIG["CHARGE_ANIM_DURATION"]
         time.sleep(charge_time)
-        keyboard.release(CONFIG["INTERACT_KEY"])
+        
+        pyautogui.mouseUp(button='right')
         logging.info(f"Lancement effectué (Puissance simulée : {charge_time:.2f}s)")
 
     def wait_for_bite(self):
-        """Attente de la morsure (BiteWindow)"""
+        """Attente de la morsure (BiteWindow) puis appui sur E"""
         wait_time = random.uniform(CONFIG["MIN_BITE_TIME"], CONFIG["MAX_BITE_TIME"])
         logging.info(f"Attente de la morsure ({wait_time:.2f}s)...")
         time.sleep(wait_time)
@@ -101,7 +106,7 @@ class FishAutomationBot:
             return False
 
     def start_fight(self):
-        """Phase de combat (Simulation souris/clavier selon le danger)"""
+        """Phase de combat (Simulation souris/clavier selon le danger/progrès)"""
         logging.info("Phase de combat commencée (Simulation souris/clavier)...")
         self.is_fighting = True
         
@@ -117,7 +122,7 @@ class FishAutomationBot:
             if danger > CONFIG["MAX_ANGLE"]:
                 logging.warning("Ligne cassée (angle trop grand) ! Simulation : Relâchement...")
                 # Simulation : arrêt de la pression ou mouvement opposé
-                keyboard.release(CONFIG["INTERACT_KEY"])
+                # Dans qs-fisher, on lâche la touche ou on bouge la souris
                 break
             
             if progress >= 100:
@@ -126,8 +131,6 @@ class FishAutomationBot:
             
             # Simulation du mouvement pour compenser le danger (si danger > 30, on bouge)
             if danger > 30:
-                # Simulation mouvement souris ou touche (selon config qs-fisher)
-                # Ici on simule un appui sur la touche opposée ou un mouvement
                 side = "left" if random.choice([True, False]) else "right"
                 logging.info(f"  -> Compensation : {side}")
                 # keyboard.press_and_release('a' if side == "left" else 'd') # Optionnel
@@ -140,6 +143,12 @@ class FishAutomationBot:
         else:
             logging.warning("Combat perdu. Ligne rompue ou poisson échappé.")
             self.reset_state()
+
+    def decide_catch(self):
+        """Décide de garder ou relâcher le poisson (Appui sur E)"""
+        logging.info("Décision : Garder (Appui sur E)...")
+        keyboard.press_and_release(CONFIG["INTERACT_KEY"])
+        time.sleep(0.5)
 
     def reset_state(self):
         """Nettoie l'état (Rangée de la canne)"""
@@ -158,15 +167,17 @@ class FishAutomationBot:
         # 1. Activer la canne
         self.toggle_fishing_rod()
         
-        # 2. Charger et lancer
+        # 2. Charger et lancer (CLIC DROIT)
         self.charge_and_cast()
         
-        # 3. Attendre la morsure et ferrer
+        # 3. Attendre la morsure et ferrer (E)
         if self.wait_for_bite():
             # 4. Combat
             self.start_fight()
+            # 5. Décision (E)
+            self.decide_catch()
         
-        # 5. Nettoyage final
+        # 6. Nettoyage final (E)
         self.reset_state()
         
         logging.info("=== FIN DE L'AUTOMATISATION ===")

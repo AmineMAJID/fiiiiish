@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fiiiiish-auto"
+version = "1.0.0"
+description = "Deterministic auto-player for the fiiiiish / qs-fisher FiveM fishing minigame"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+live = ["websocket-client>=1.6.0"]
+
+[project.scripts]
+fiiiiish-auto = "fiiiiish_auto.cli:main"
+
+[tool.setuptools]
+packages = ["fiiiiish_auto"]

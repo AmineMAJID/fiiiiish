@@ -292,6 +292,20 @@ function CheckProximity()
     CreateThread(CheckProximityThread)
 end
 
+-- Every UI screen lives inside one wrapper that `hideBody` sets to display:none.
+-- That includes screens the player has to click on — the keep-it window above all
+-- — so opening the pause menu while one of them is up used to make it disappear
+-- and the catch settled itself on the timeout. NuiModalOpen marks the screens that
+-- need the player's attention; while it is set the wrapper is never hidden.
+NuiModalOpen = false
+
+function SetNuiModalOpen(open)
+    NuiModalOpen = open and true or false
+    if NuiModalOpen then
+        SendNUIMessage({ action = "showBody" })
+    end
+end
+
 CreateThread(function()
     local wasPaused = false
     while true do
@@ -299,7 +313,9 @@ CreateThread(function()
         local isPaused = IsPauseMenuActive()
         if isPaused and not wasPaused then
             wasPaused = true
-            SendNUIMessage({ action = "hideBody" })
+            if not NuiModalOpen then
+                SendNUIMessage({ action = "hideBody" })
+            end
         elseif not isPaused and wasPaused then
             wasPaused = false
             SendNUIMessage({ action = "showBody" })
@@ -309,6 +325,9 @@ end)
 
 RegisterNUICallback("closeNui", function(data, cb)
     SetNuiFocus(false, false)
+    if SetNuiModalOpen then
+        SetNuiModalOpen(false)
+    end
     SendNUIMessage({ action = "close" })
     cb({ status = "ok" })
 end)

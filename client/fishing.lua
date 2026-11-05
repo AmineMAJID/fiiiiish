@@ -203,7 +203,9 @@ function OpenTackleBox()
             end
         end
     end
-    SetNuiFocus(true, true)
+    if SetNuiModalOpen then
+        SetNuiModalOpen(true)
+    end
     SendNUIMessage({
         action = "openTackleBox",
         attachments = data.attachments or {},
@@ -214,6 +216,7 @@ function OpenTackleBox()
         nextRod = data.nextRod,
         slots = data.slots
     })
+    SetNuiFocus(true, true)
 end
 
 exports("toggleFishingKit", function()
@@ -274,6 +277,9 @@ end)
 
 RegisterNUICallback("closeTackleBox", function(data, cb)
     SetNuiFocus(false, false)
+    if SetNuiModalOpen then
+        SetNuiModalOpen(false)
+    end
     for slotKey in pairs(validGearSlots) do
         local equippedItem = data.equipped and data.equipped[slotKey] or nil
         SetGearSlot(slotKey, equippedItem)
@@ -285,17 +291,25 @@ RegisterNUICallback("decideCatch", function(data, cb)
     cb("ok")
     local token = activeDecisionToken
     if not token then
+        print("^3[qs-fishingjob]^0 the keep-it window answered, but no catch was waiting for an answer (" .. tostring(data.keep) .. ").")
         return
     end
     activeDecisionToken = nil
     SetNuiFocus(false, false)
+    if SetNuiModalOpen then
+        SetNuiModalOpen(false)
+    end
     if token:sub(1, 5) == "test-" then
         return
     end
+    DebugPrint("catch decision: player answered keep =", data.keep == true)
     CreateThread(function()
         local result = lib.callback.await("qs-fisher:decideCatch", false, token, data.keep == true)
         if result then
             ReportCatchSettled(result)
+        else
+            print("^3[qs-fishingjob]^0 the server did not settle this catch — check the server console for the error above.")
+            CreateNotification("notify", "error", Lang("CATCH_NOT_SETTLED"))
         end
     end)
 end)
@@ -1091,8 +1105,17 @@ function DepthList(bands)
 end
 
 function OpenCatchDecisionModal(token, catchData)
+    local timeout = catchData.timeout or 9000
     activeDecisionToken = token
-    SetNuiFocus(true, true)
+    DebugPrint("catch decision: opening the keep-it window", token, "timeout", timeout)
+
+    if SetNuiModalOpen then
+        SetNuiModalOpen(true)
+    else
+        -- The whole UI lives in a wrapper that `hideBody` hides; make sure it is up.
+        SendNUIMessage({ action = "showBody" })
+    end
+
     SendNUIMessage({
         action = "catchDecision",
         label = catchData.label,
@@ -1101,29 +1124,49 @@ function OpenCatchDecisionModal(token, catchData)
         stats = catchData.stats,
         specimens = catchData.specimens,
         previousBest = catchData.previousBest,
-        timeout = catchData.timeout
+        timeout = timeout
     })
+    SetNuiFocus(true, true)
+
     CreateThread(function()
-        local expireTimer = GetGameTimer() + (catchData.timeout or 9000)
+        -- A little longer than the countdown shown in the window, so a click landing
+        -- in the last second is not beaten by the automatic answer.
+        local expireTimer = GetGameTimer() + timeout + 1000
         while activeDecisionToken == token and expireTimer > GetGameTimer() do
             Wait(100)
         end
         if activeDecisionToken ~= token then
             return
         end
+        DebugPrint("catch decision: nobody answered, settling it the configured way", token)
         activeDecisionToken = nil
         SetNuiFocus(false, false)
+        if SetNuiModalOpen then
+            SetNuiModalOpen(false)
+        end
         SendNUIMessage({ action = "catchDecisionClose" })
+        if token:sub(1, 5) == "test-" then
+            return
+        end
         local timeoutKeeps = Config.CatchDecision and Config.CatchDecision.TimeoutKeeps ~= false
         local result = lib.callback.await("qs-fisher:decideCatch", false, token, timeoutKeeps)
         if result then
             ReportCatchSettled(result)
+        else
+            print("^3[qs-fishingjob]^0 the keep-it window timed out and the server did not answer — check the server console.")
         end
     end)
 end
 
 function ReportCatchSettled(data)
     if not data then
+        return
+    end
+    if data.failed then
+        -- The server answered but could not finish the catch. Do not pretend it was
+        -- released: say it plainly, the fish is still in the water as far as the bag
+        -- is concerned.
+        CreateNotification("notify", "error", Lang("CATCH_NOT_SETTLED"))
         return
     end
     if data.kept then
@@ -1358,6 +1401,44 @@ function StartFishingFight(token, fightConfig)
         end
     end)
 end
+
+--[[
+    /testkeep — opens the keep-it window on its own, with a made-up fish.
+
+    The token starts with "test-", so the client never asks the server to settle it:
+    nothing is written, nothing is given, no record moves. It is here to answer one
+    question in five seconds — does the window draw and take clicks on this install?
+    If it shows up here but never during a real catch, the problem is on the server
+    side (Config.CatchDecision.Enabled, or a saved setting in qs_fisher_config).
+]]
+CreateThread(function()
+    if not (Config.AdminPanel and Config.AdminPanel.Enabled) then
+        return
+    end
+    local ace = Config.AdminPanel.Ace or "command.fishing"
+    RegisterCommand("testkeep", function()
+        if isFighting or isFishing then
+            return
+        end
+        CreateThread(function()
+            local allowed = lib.callback.await("qs-fisher:testKeepAllowed", false)
+            if not allowed then
+                return
+            end
+            local token = ("test-%d"):format(GetGameTimer())
+            OpenCatchDecisionModal(token, {
+                label = "Test Snapper",
+                item = "snapper",
+                amount = 1,
+                stats = { weight = 2.36, quality = 0.72, trophy = false },
+                specimens = { { weight = 2.36, quality = 0.72, trophy = false } },
+                previousBest = nil,
+                timeout = Config.CatchDecision and Config.CatchDecision.Timeout or 9000
+            })
+        end)
+    end, false)
+    DebugPrint("/testkeep ready (ace " .. tostring(ace) .. ")")
+end)
 
 function ChargeCastPower()
     if not Config.Cast or not Config.Cast.Enabled then

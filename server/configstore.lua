@@ -420,6 +420,7 @@ function LoadStoredConfig()
 
     local appliedCount = 0
     local ignoredPaths = {}
+    local catchDecisionOverrides = {}
 
     for _, row in ipairs(rows) do
         local decodedOk, parsedVal = pcall(json.decode, row.value)
@@ -429,11 +430,27 @@ function LoadStoredConfig()
                 AppliedConfig[row.path] = parsedVal
                 LiveOverrides[row.path] = parsedVal
                 appliedCount = appliedCount + 1
+                if row.path == "CatchDecision.Enabled" then
+                    catchDecisionOverrides[#catchDecisionOverrides + 1] = tostring(parsedVal)
+                end
             else
                 ignoredPaths[#ignoredPaths + 1] = row.path
             end
         else
             ignoredPaths[#ignoredPaths + 1] = row.path
+        end
+    end
+
+    -- The keep-it window is the one setting people report as "not working" when it
+    -- has simply been switched off from the admin panel. Name it when it happens.
+    if #catchDecisionOverrides > 0 and Config.CatchDecision then
+        if Config.CatchDecision.Enabled == false then
+            print(("^3[qs-fishingjob]^0 a saved setting in `%s` turns CatchDecision off, so the keep-it window will not open.\n"
+                .. "  It overrides config.lua. Delete that row or set it back to true from the admin panel.\n"
+                .. "    DELETE FROM `%s` WHERE `path` = 'CatchDecision.Enabled';"):format(TABLE_NAME, TABLE_NAME))
+        else
+            print(("^2[qs-fishingjob]^0 CatchDecision settings applied from `%s` (Enabled = %s).")
+                :format(TABLE_NAME, tostring(Config.CatchDecision.Enabled)))
         end
     end
 

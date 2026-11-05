@@ -9,6 +9,7 @@ local validGearSlots = {
 local playerGear = {}
 local activeCasts = {}
 local pendingDecisions = {}
+local catchDecisionNoticeShown = false
 local lastCastTime = {}
 local cachedOrderedFish = nil
 local cachedFishLabels = nil
@@ -765,6 +766,14 @@ function BuildFightParameters(difficulty, lineStrengthBonus)
     }
 end
 
+-- Gate for the /testkeep helper in client/fishing.lua: same ace as the admin panel.
+lib.callback.register("qs-fisher:testKeepAllowed", function(source)
+    if IsPlayerAdmin then
+        return IsPlayerAdmin(source) == true
+    end
+    return false
+end)
+
 lib.callback.register("qs-fisher:testFightSettings", function(source, difficultyInput)
     local clampedDiff = math.max(0.0, math.min(tonumber(difficultyInput) or 1.0, 1.0))
     local lineStrength = GetGearBonus(source, "lineStrength")
@@ -1122,6 +1131,21 @@ lib.callback.register("qs-fisher:resolveCatch", function(source, token, isSucces
     result.specimens = specimens
 
     if not (Config.CatchDecision and Config.CatchDecision.Enabled) then
+        -- This is the switch that silences the keep-it window. Say so out loud the
+        -- first time it happens rather than leaving the owner hunting for a bug:
+        -- the admin panel saves into qs_fisher_config and that overrides config.lua
+        -- on every start, so the value that counts is rarely the one in the file.
+        if not catchDecisionNoticeShown then
+            catchDecisionNoticeShown = true
+            local reason = Config.CatchDecision
+                and "Config.CatchDecision.Enabled is false"
+                or "Config.CatchDecision is missing entirely"
+            print(string.format("^3[qs-fishingjob]^0 the keep-it window is off (%s), so every fish goes straight into the bag.\n"
+                .. "  Check config/config.lua, then the admin panel: a saved setting in `qs_fisher_config`\n"
+                .. "  overrides config.lua at every start. `SELECT * FROM qs_fisher_config WHERE path LIKE 'CatchDecision%%';`",
+                reason))
+        end
+
         local applied = ApplyCatch(src, identifier, catchSummary, true)
         result.kept = applied.kept
         result.newRecord = applied.newRecord
@@ -1159,11 +1183,27 @@ lib.callback.register("qs-fisher:decideCatch", function(source, token, isKept)
     local pending = pendingDecisions[src]
 
     if not pending or type(token) ~= "string" or pending.token ~= token then
+        -- Already settled by the fallback timer, or the window answered twice.
+        DebugPrint("decideCatch: nothing pending for", src, "token", tostring(token))
         return nil
     end
 
     pendingDecisions[src] = nil
-    local applied = ApplyCatch(src, pending.identifier, pending, isKept == true)
+    DebugPrint("decideCatch: keep =", isKept == true, "for", pending.fish and pending.fish.name)
+
+    -- ApplyCatch hands out the item, pays the experience and writes the records.
+    -- If any of that throws, the player must still be told what happened instead
+    -- of the callback dying and the client sitting on a window that did nothing.
+    local ok, applied = pcall(ApplyCatch, src, pending.identifier, pending, isKept == true)
+    if not ok then
+        print(string.format("^1[qs-fishingjob]^0 decideCatch could not settle the catch: %s", tostring(applied)))
+        return {
+            kept = false,
+            failed = true,
+            label = pending.fish and pending.fish.label or "?",
+            amount = pending.amount
+        }
+    end
 
     return {
         kept = applied.kept,

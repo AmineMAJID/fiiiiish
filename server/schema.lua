@@ -14,7 +14,113 @@ local JOB_LABELS = {
     fisher = "Fisher"
 }
 
+-- Columns every install of the records table must have. Older builds shipped a
+-- different shape (best_length, no caught/released/trophies), and because the
+-- CREATE TABLE below is IF NOT EXISTS, an old table is never reshaped by itself.
+-- That used to break the whole catch: the SELECT in server/fishstats.lua threw
+-- "Unknown column 'caught'", which aborted resolveCatch before the items and the
+-- keep-it panel were ever produced.
+local RECORD_COLUMNS = {
+    { "fish",         "VARCHAR(64) NOT NULL DEFAULT '' COLLATE 'utf8mb4_general_ci'" },
+    { "caught",       "INT(10) UNSIGNED NOT NULL DEFAULT 0" },
+    { "released",     "INT(10) UNSIGNED NOT NULL DEFAULT 0" },
+    { "best_weight",  "DECIMAL(8,2) NOT NULL DEFAULT 0" },
+    { "best_quality", "DECIMAL(4,3) NOT NULL DEFAULT 0" },
+    { "best_at",      "DATETIME NULL DEFAULT NULL" },
+    { "trophies",     "INT(10) UNSIGNED NOT NULL DEFAULT 0" }
+}
+
 local schemaState = "idle"
+
+function TableColumns(tableName)
+    local rows = MySQL.query.await([[
+        SELECT COLUMN_NAME FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+    ]], { tableName }) or {}
+
+    local columns = {}
+    for _, row in ipairs(rows or {}) do
+        local name = row.COLUMN_NAME or row.column_name
+        if name then
+            columns[string.lower(name)] = true
+        end
+    end
+    return columns
+end
+
+function EnsureTableColumns(tableName, columnDefs)
+    local existing = TableColumns(tableName)
+    local added = 0
+
+    for _, def in ipairs(columnDefs) do
+        local columnName, columnType = def[1], def[2]
+        if not existing[string.lower(columnName)] then
+            local ok, err = pcall(function()
+                MySQL.query.await(string.format("ALTER TABLE `%s` ADD COLUMN `%s` %s", tableName, columnName, columnType))
+            end)
+            if ok then
+                added = added + 1
+                print(string.format("^2[qs-fishingjob]^0 added missing column %s.%s", tableName, columnName))
+            else
+                print(string.format("^1[qs-fishingjob]^0 could not add column %s.%s: %s", tableName, columnName, tostring(err)))
+            end
+        end
+    end
+
+    return added
+end
+
+function IndexColumns(tableName, indexName)
+    local rows = MySQL.query.await([[
+        SELECT COLUMN_NAME FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?
+        ORDER BY SEQ_IN_INDEX
+    ]], { tableName, indexName }) or {}
+
+    local list = {}
+    for _, row in ipairs(rows or {}) do
+        list[#list + 1] = string.lower(row.COLUMN_NAME or row.column_name or "")
+    end
+    return list
+end
+
+-- ON DUPLICATE KEY UPDATE only does what it says if a UNIQUE/PRIMARY key covers
+-- (identifier, fish). An old table keyed on identifier alone would grow one row
+-- per catch instead of updating it.
+function EnsureRecordUniqueKey()
+    local primary = IndexColumns(BASE_TABLE .. "_records", "PRIMARY")
+    if #primary == 2 and primary[1] == "identifier" and primary[2] == "fish" then
+        return
+    end
+
+    local existing = IndexColumns(BASE_TABLE .. "_records", "uniq_identifier_fish")
+    if #existing == 2 and existing[1] == "identifier" and existing[2] == "fish" then
+        return
+    end
+
+    -- Primary key on identifier alone: the table holds one row per player from a
+    -- build that did not track individual species. It cannot hold per-fish records,
+    -- so say so plainly instead of quietly writing nonsense into it.
+    if #primary == 1 and primary[1] == "identifier" then
+        print(string.format("^3[qs-fishingjob]^0 `%s_records` is keyed on identifier only (old format).\n"
+            .. "  Per-fish records cannot be stored in it. Emptying it lets the new keys be added:\n"
+            .. "    TRUNCATE TABLE `%s_records`;\n"
+            .. "  then restart the resource.", BASE_TABLE, BASE_TABLE))
+        return
+    end
+
+    local ok, err = pcall(function()
+        MySQL.query.await(string.format(
+            "ALTER TABLE `%s_records` ADD UNIQUE KEY `uniq_identifier_fish` (`identifier`, `fish`)", BASE_TABLE))
+    end)
+
+    if ok then
+        print(string.format("^2[qs-fishingjob]^0 added the (identifier, fish) unique key to %s_records.", BASE_TABLE))
+    else
+        print(string.format("^3[qs-fishingjob]^0 could not add a unique key to %s_records (duplicate rows?): %s\n"
+            .. "  Personal records will overwrite nothing until the duplicates are cleaned up.", BASE_TABLE, tostring(err)))
+    end
+end
 
 function AlignCollation()
     local usersTable = "users"
@@ -143,6 +249,9 @@ function CreateTables()
         print("^2[qs-fishingjob]^0 dropped the legacy best_length column; catches are measured by weight only now.")
     end
 
+    EnsureTableColumns(BASE_TABLE .. "_records", RECORD_COLUMNS)
+    EnsureRecordUniqueKey()
+
     MySQL.query.await(string.format([[
         CREATE TABLE IF NOT EXISTS `%s_tournaments` (
             `identifier` VARCHAR(46) NOT NULL COLLATE 'utf8mb4_general_ci',
@@ -255,11 +364,22 @@ function EnsureSchema()
 
     schemaState = "running"
 
-    local schemaOk, schemaErr = pcall(function()
-        CreateTables()
-        VerifyColumns()
-        AlignCollation()
-    end)
+    -- Every step gets its own pcall: a failure while migrating the records table
+    -- must not skip the collation alignment (or the other way round).
+    local steps = {
+        { name = "create the tables", fn = CreateTables },
+        { name = "verify the columns", fn = VerifyColumns },
+        { name = "align the collations", fn = AlignCollation }
+    }
+
+    local failures = 0
+    for _, step in ipairs(steps) do
+        local ok, err = pcall(step.fn)
+        if not ok then
+            failures = failures + 1
+            print(string.format("^1[%s]^0 Could not %s: %s", GetCurrentResourceName(), step.name, tostring(err)))
+        end
+    end
 
     local esxOk, esxErr = pcall(RegisterESXJobs)
 
@@ -269,8 +389,8 @@ function EnsureSchema()
 
     schemaState = "ready"
 
-    if not schemaOk then
-        print(string.format("^1[%s]^0 Could not verify the database schema: %s", GetCurrentResourceName(), tostring(schemaErr)))
+    if failures == 0 then
+        print(string.format("^2[%s]^0 schema ready.", GetCurrentResourceName()))
     end
     if not esxOk then
         print(string.format("^3[%s]^0 Could not register the ESX job rows: %s", GetCurrentResourceName(), tostring(esxErr)))

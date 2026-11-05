@@ -1138,7 +1138,15 @@ end
 
 function ResolveCatch(token, success, cancelled)
     local result = lib.callback.await("qs-fisher:resolveCatch", false, token, success, cancelled)
-    if not result or result.cancelled then
+    if not result then
+        -- A nil answer means the server threw before it could settle the catch
+        -- (a database error, usually). Say it out loud instead of losing the fish
+        -- in silence: previously this was an empty `return` with no trace at all.
+        print("^3[qs-fishingjob]^0 the server did not settle this catch — check the server console for the error above.")
+        CreateNotification("notify", "error", Lang("CATCH_NOT_SETTLED"))
+        return
+    end
+    if result.cancelled then
         return
     end
     if result.extra then

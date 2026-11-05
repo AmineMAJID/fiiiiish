@@ -1,6 +1,7 @@
 --[[   -- https://discord.gg/zqcBffbMZn ]]
 local RECORDS_TABLE = "qs_fisher_records"
 local playerRecordsCache = {}
+local recordsQueryWarned = false
 
 local LEVEL_WEIGHT = 0.012
 local POWER_WEIGHT = 0.85
@@ -77,8 +78,24 @@ function LoadPlayerRecords(identifier)
     end
     local records = {}
     local query = string.format("SELECT fish, caught, released, best_weight, best_quality, trophies FROM `%s` WHERE identifier = ?", RECORDS_TABLE)
-    local result = MySQL.query.await(query, { identifier }) or {}
-    for _, row in ipairs(result) do
+    -- A broken records table must never cost the player their fish. oxmysql throws
+    -- on a failed query, and this function is called in the middle of resolveCatch,
+    -- before the item is handed out and before the keep-it panel is sent. Catch the
+    -- error, hand back empty records, and let the schema migration fix the table.
+    local ok, result = pcall(function()
+        return MySQL.query.await(query, { identifier })
+    end)
+    if not ok then
+        if not recordsQueryWarned then
+            recordsQueryWarned = true
+            print(string.format("^1[qs-fishingjob]^0 could not read `%s`: %s", RECORDS_TABLE, tostring(result)))
+            print("  Catch records are disabled until this is fixed, but catches still pay out.")
+            print("  Restart the resource to let the schema migration add the missing columns.")
+        end
+        return records
+    end
+
+    for _, row in ipairs(result or {}) do
         records[row.fish] = {
             caught = tonumber(row.caught) or 0,
             released = tonumber(row.released) or 0,

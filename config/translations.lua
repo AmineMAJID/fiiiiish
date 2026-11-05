@@ -59,6 +59,7 @@ Config.Languages = {
         ["CATCH_KEPT"]                    = "Kept %dx %s",
         ["CATCH_RELEASED"]                = "You released the %s",
         ["NEW_PERSONAL_BEST"]             = "New personal best: %s!",
+        ["CATCH_NOT_SETTLED"]             = "The catch could not be recorded — check the server console",
 
         -- Achievements
         ["ACHIEVEMENTS"]                  = "Achievements",

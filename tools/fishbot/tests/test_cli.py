@@ -63,6 +63,45 @@ def test_win32_layout() -> None:
           kinds == ["move", "move_rel", "down", "up", "click", "key", "key_down", "key_up"],
           f"{kinds}")
 
+    # the absolute-coordinate conversion, on a fake desktop so it can be checked
+    class _FakeUser32:
+        def __init__(self, vx, vy, vw, vh):
+            self.box = (vx, vy, vw, vh)
+
+        def GetSystemMetrics(self, index):
+            return {76: self.box[0], 77: self.box[1], 78: self.box[2], 79: self.box[3]}[index]
+
+    class _AnyInj(winapi.Injector):
+        """A live injector over a fake desktop: nothing is sent, the coordinate
+        maths is the real one."""
+
+        def __init__(self, box):
+            super().__init__(dry_run=True)
+            self.dry_run = False        # take the real code path...
+            self.require_foreground = False
+            self._user32 = _FakeUser32(*box)
+
+        def _send(self, inp):
+            self.sent = getattr(self, "sent", [])
+            self.sent.append((inp.mi.dx, inp.mi.dy))
+
+    inj2 = _AnyInj((0, 0, 1920, 1080))
+    inj2.move_to(0, 0)
+    inj2.move_to(1919, 1079)
+    inj2.move_to(-500, 5000)          # off the desktop: clamped, never wrapped
+    points = inj2.sent
+    check("top-left maps to 0,0", points[0] == (0, 0), f"{points[0]}")
+    check("bottom-right maps to 65535,65535", points[1] == (65535, 65535), f"{points[1]}")
+    check("out-of-range points are clamped", points[2] == (0, 65535), f"{points[2]}")
+
+    # a second monitor to the left shifts the origin
+    inj3 = _AnyInj((-1920, 0, 3840, 1080))
+    inj3.move_to(-1920, 540)
+    inj3.move_to(1919, 540)
+    pts = inj3.sent
+    check("a monitor to the left is handled", pts[0][0] == 0 and pts[1][0] == 65535,
+          f"{pts}")
+
     keys = winapi.HotkeyWatcher(dry_run=True)
     check("hotkeys are inert when dry", keys.poll() == [], "pressed something")
     check("the panic keys are bound",

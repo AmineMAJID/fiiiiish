@@ -469,20 +469,43 @@ class Injector:
         self.target_hwnd = target_hwnd
         self.history = []
         self._sent = 0
+        self._desktop: Optional[Tuple[int, int, int, int]] = None
         if not dry_run:
             set_dpi_awareness()
             self._user32 = _user32()
-            vs = self._user32.GetSystemMetrics
-            self._vx = vs(SM_XVIRTUALSCREEN)
-            self._vy = vs(SM_YVIRTUALSCREEN)
-            self._vw = max(2, vs(SM_CXVIRTUALSCREEN))
-            self._vh = max(2, vs(SM_CYVIRTUALSCREEN))
         self.last_cursor: Optional[Tuple[int, int]] = None
+
+    #: Subclasses (and tests) can supply a stand-in for user32; on a real run
+    #: this is the loaded DLL.
+    _user32: object = None
+
+    def _virtual_desktop(self) -> Tuple[int, int, int, int]:
+        """Where the desktop starts and how big it is, in physical pixels.
+
+        Re-read for every absolute move rather than cached: adding a monitor,
+        changing the resolution or switching the display mode all change it, and
+        a stale rectangle puts every click somewhere else.  Four cheap calls per
+        click (the only absolute moves there are) is nothing.
+        """
+        if self._desktop is None:
+            vs = self._user32.GetSystemMetrics
+            self._desktop = (vs(SM_XVIRTUALSCREEN), vs(SM_YVIRTUALSCREEN),
+                             max(2, vs(SM_CXVIRTUALSCREEN)),
+                             max(2, vs(SM_CYVIRTUALSCREEN)))
+        return self._desktop
 
     # -- guards -------------------------------------------------------------
     def foreground_ok(self) -> bool:
+        """Is the game focused and on screen?  Everything else is a no-go.
+
+        Input aimed at a minimised or backgrounded game is not merely useless -
+        it lands in whatever the player *is* looking at, which is how an
+        automation tool types nonsense into somebody's chat window.
+        """
         if self.dry_run or not self.require_foreground or not self.target_hwnd:
             return True
+        if self._user32.IsIconic(wt.HWND(self.target_hwnd)):
+            return False
         fg = self._user32.GetForegroundWindow()
         return int(fg) == int(self.target_hwnd)
 
@@ -499,12 +522,15 @@ class Injector:
             return
         if not self.foreground_ok():
             raise RuntimeError("the game window is not focused; refusing to move the mouse")
-        nx = int(round((x - self._vx) * 65535.0 / (self._vw - 1)))
-        ny = int(round((y - self._vy) * 65535.0 / (self._vh - 1)))
+        vx, vy, vw, vh = self._virtual_desktop()
+        # SendInput's absolute coordinates are 0..65535 across the *virtual*
+        # desktop, not pixels: getting this wrong scales every click.
+        nx = int(round(max(0.0, min(1.0, (x - vx) / (vw - 1))) * 65535.0))
+        ny = int(round(max(0.0, min(1.0, (y - vy) / (vh - 1))) * 65535.0))
         inp = _INPUT(type=INPUT_MOUSE)
         inp.mi = _MOUSEINPUT(dx=nx, dy=ny, mouseData=0,
                              dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-                             time=0, dwExtraInfo=None)
+                             time=0, dwExtraInfo=0)
         self._send(inp)
         self.last_cursor = (x, y)
 
@@ -519,8 +545,12 @@ class Injector:
             raise RuntimeError("the game window is not focused; refusing to move the mouse")
         inp = _INPUT(type=INPUT_MOUSE)
         inp.mi = _MOUSEINPUT(dx=int(dx), dy=int(dy), mouseData=0,
-                             dwFlags=MOUSEEVENTF_MOVE, time=0, dwExtraInfo=None)
+                             dwFlags=MOUSEEVENTF_MOVE, time=0, dwExtraInfo=0)
         self._send(inp)
+
+    def invalidate_desktop(self) -> None:
+        """Forget the cached desktop rectangle (after a display change)."""
+        self._desktop = None
 
     def mouse_down(self, button: str = "left") -> None:
         """Press and *hold* a button - the cast power meter charges while the
@@ -530,7 +560,7 @@ class Injector:
             return
         flags = MOUSEEVENTF_LEFTDOWN if button == "left" else MOUSEEVENTF_RIGHTDOWN
         inp = _INPUT(type=INPUT_MOUSE)
-        inp.mi = _MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flags, time=0, dwExtraInfo=None)
+        inp.mi = _MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flags, time=0, dwExtraInfo=0)
         self._send(inp)
 
     def mouse_up(self, button: str = "left") -> None:
@@ -539,7 +569,7 @@ class Injector:
             return
         flags = MOUSEEVENTF_LEFTUP if button == "left" else MOUSEEVENTF_RIGHTUP
         inp = _INPUT(type=INPUT_MOUSE)
-        inp.mi = _MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flags, time=0, dwExtraInfo=None)
+        inp.mi = _MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flags, time=0, dwExtraInfo=0)
         self._send(inp)
 
     def click(self, x: Optional[int] = None, y: Optional[int] = None,
@@ -553,7 +583,7 @@ class Injector:
         up = MOUSEEVENTF_LEFTUP if button == "left" else MOUSEEVENTF_RIGHTUP
         for flags in (down, up):
             inp = _INPUT(type=INPUT_MOUSE)
-            inp.mi = _MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flags, time=0, dwExtraInfo=None)
+            inp.mi = _MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flags, time=0, dwExtraInfo=0)
             self._send(inp)
 
     # -- keyboard -----------------------------------------------------------
@@ -568,7 +598,7 @@ class Injector:
             raise ValueError(f"unknown key {name!r}; add it to VK_CODES")
         for flags in (0, KEYEVENTF_KEYUP):
             inp = _INPUT(type=INPUT_KEYBOARD)
-            inp.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=None)
+            inp.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0)
             self._send(inp)
             time.sleep(hold_ms / 1000.0)
 
@@ -578,7 +608,7 @@ class Injector:
             return
         vk = VK_CODES[name.lower()]
         inp = _INPUT(type=INPUT_KEYBOARD)
-        inp.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=0, time=0, dwExtraInfo=None)
+        inp.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=0, time=0, dwExtraInfo=0)
         self._send(inp)
 
     def key_up(self, name: str) -> None:
@@ -587,7 +617,7 @@ class Injector:
             return
         vk = VK_CODES[name.lower()]
         inp = _INPUT(type=INPUT_KEYBOARD)
-        inp.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=None)
+        inp.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)
         self._send(inp)
 
     def _send(self, inp: "_INPUT") -> None:

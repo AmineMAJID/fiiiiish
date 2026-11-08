@@ -57,35 +57,49 @@ SM_CYVIRTUALSCREEN = 79
 MONITOR_DEFAULTTONEAREST = 2
 
 
+# Every Win32 structure below is spelled out with fixed-width types instead of
+# the `ctypes.wintypes` aliases, because those aliases follow the host C ABI:
+# `wt.DWORD` is a C `unsigned long` (4 bytes on Windows, 8 on Linux), `wt.LONG`
+# the same, and `wt.WORD` isn't even 2 bytes everywhere.  A structure whose
+# fields resize with the platform makes `SendInput` read at the wrong offsets -
+# silently, at runtime, on the one machine that matters.  With fixed widths the
+# layouts are checkable anywhere, and `tests.test_cli` checks them: INPUT is 40
+# bytes on x64 (28 on x86), MOUSEINPUT 32/24, KEYBDINPUT 24/16, and
+# BITMAPINFOHEADER 40.
+_LONG = ctypes.c_int32
+_ULONG = ctypes.c_uint32
+_WORD = ctypes.c_uint16
+_ULONG_PTR = ctypes.c_size_t
+
 class _BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
-        ("biSize", wt.DWORD),
-        ("biWidth", wt.LONG),
-        ("biHeight", wt.LONG),
-        ("biPlanes", wt.WORD),
-        ("biBitCount", wt.WORD),
-        ("biCompression", wt.DWORD),
-        ("biSizeImage", wt.DWORD),
-        ("biXPelsPerMeter", wt.LONG),
-        ("biYPelsPerMeter", wt.LONG),
-        ("biClrUsed", wt.DWORD),
-        ("biClrImportant", wt.DWORD),
+        ("biSize", _ULONG),
+        ("biWidth", _LONG),
+        ("biHeight", _LONG),
+        ("biPlanes", _WORD),
+        ("biBitCount", _WORD),
+        ("biCompression", _ULONG),
+        ("biSizeImage", _ULONG),
+        ("biXPelsPerMeter", _LONG),
+        ("biYPelsPerMeter", _LONG),
+        ("biClrUsed", _ULONG),
+        ("biClrImportant", _ULONG),
     ]
 
 
 class _BITMAPINFO(ctypes.Structure):
-    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wt.DWORD * 3)]
+    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", _ULONG * 3)]
+
 
 
 class _MOUSEINPUT(ctypes.Structure):
-    _fields_ = [("dx", wt.LONG), ("dy", wt.LONG), ("mouseData", wt.DWORD),
-                ("dwFlags", wt.DWORD), ("time", wt.DWORD),
-                ("dwExtraInfo", ctypes.POINTER(wt.ULONG))]
+    _fields_ = [("dx", _LONG), ("dy", _LONG), ("mouseData", _ULONG),
+                ("dwFlags", _ULONG), ("time", _ULONG), ("dwExtraInfo", _ULONG_PTR)]
 
 
 class _KEYBDINPUT(ctypes.Structure):
-    _fields_ = [("wVk", wt.WORD), ("wScan", wt.WORD), ("dwFlags", wt.DWORD),
-                ("time", wt.DWORD), ("dwExtraInfo", ctypes.POINTER(wt.ULONG))]
+    _fields_ = [("wVk", _WORD), ("wScan", _WORD), ("dwFlags", _ULONG),
+                ("time", _ULONG), ("dwExtraInfo", _ULONG_PTR)]
 
 
 class _INPUTUNION(ctypes.Union):
@@ -94,7 +108,7 @@ class _INPUTUNION(ctypes.Union):
 
 class _INPUT(ctypes.Structure):
     _anonymous_ = ("u",)
-    _fields_ = [("type", wt.DWORD), ("u", _INPUTUNION)]
+    _fields_ = [("type", _ULONG), ("u", _INPUTUNION)]
 
 
 def _user32():
@@ -210,8 +224,8 @@ def _monitor_rect(hwnd: int) -> Tuple[int, int, int, int]:
     user32 = _user32()
 
     class _MONITORINFO(ctypes.Structure):
-        _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT),
-                    ("dwFlags", wt.DWORD)]
+        _fields_ = [("cbSize", _ULONG), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT),
+                    ("dwFlags", _ULONG)]
 
     user32.MonitorFromWindow.restype = wt.HANDLE
     hmon = user32.MonitorFromWindow(wt.HWND(hwnd), MONITOR_DEFAULTTONEAREST)
@@ -487,7 +501,6 @@ class Injector:
             raise RuntimeError("the game window is not focused; refusing to move the mouse")
         nx = int(round((x - self._vx) * 65535.0 / (self._vw - 1)))
         ny = int(round((y - self._vy) * 65535.0 / (self._vh - 1)))
-        dx = self._user32.GetSystemMetrics(75)  # SM_CXICON, unused placeholder
         inp = _INPUT(type=INPUT_MOUSE)
         inp.mi = _MOUSEINPUT(dx=nx, dy=ny, mouseData=0,
                              dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,

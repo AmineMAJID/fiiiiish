@@ -28,6 +28,47 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         failures.append(f"{name} {detail}")
 
 
+def test_win32_layout() -> None:
+    print("\n[the Win32 structures have the sizes the headers specify]")
+    import ctypes
+    from fishbot import winapi
+
+    ptr = ctypes.sizeof(ctypes.c_void_p)
+    expect = 40 if ptr == 8 else 28
+    check(f"INPUT is {expect} bytes", ctypes.sizeof(winapi._INPUT) == expect,
+          f"{ctypes.sizeof(winapi._INPUT)}")
+    check("MOUSEINPUT is 32 bytes on x64 / 24 on x86",
+          ctypes.sizeof(winapi._MOUSEINPUT) == (32 if ptr == 8 else 24),
+          f"{ctypes.sizeof(winapi._MOUSEINPUT)}")
+    check("KEYBDINPUT is 24 bytes on x64 / 16 on x86",
+          ctypes.sizeof(winapi._KEYBDINPUT) == (24 if ptr == 8 else 16),
+          f"{ctypes.sizeof(winapi._KEYBDINPUT)}")
+    check("BITMAPINFOHEADER is 40 bytes",
+          ctypes.sizeof(winapi._BITMAPINFOHEADER) == 40,
+          f"{ctypes.sizeof(winapi._BITMAPINFOHEADER)}")
+
+    # A dry-run injector is the only way to exercise these paths off Windows,
+    # and it is also what makes sure every call is shaped correctly.
+    inj = winapi.Injector(dry_run=True)
+    inj.move_to(100, 200)
+    inj.move_relative(7, 0)
+    inj.mouse_down()
+    inj.mouse_up()
+    inj.click(5, 6)
+    inj.key("e")
+    inj.key_down("e")
+    inj.key_up("e")
+    kinds = [k for k, _ in inj.history]
+    check("every input call is journalled",
+          kinds == ["move", "move_rel", "down", "up", "click", "key", "key_down", "key_up"],
+          f"{kinds}")
+
+    keys = winapi.HotkeyWatcher(dry_run=True)
+    check("hotkeys are inert when dry", keys.poll() == [], "pressed something")
+    check("the panic keys are bound",
+          set(keys.keys) == {"start", "stop", "pause"}, f"{sorted(keys.keys)}")
+
+
 def test_settings_roundtrip() -> None:
     print("\n[settings file: the learned sensitivity survives a restart]")
     with tempfile.TemporaryDirectory() as tmp:
@@ -170,6 +211,7 @@ def test_ask_for_numpy() -> None:
 
 
 def main() -> int:
+    test_win32_layout()
     test_settings_roundtrip()
     test_reporter()
     test_snapshot()

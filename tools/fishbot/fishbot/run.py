@@ -143,10 +143,13 @@ def main(argv: Optional[list] = None) -> int:
                   "window says it is.\nTry --capture bitblt, and if the game is in "
                   "exclusive fullscreen switch it to borderless.", file=sys.stderr)
         img = frame.arr.astype("uint8").copy()
-        regions = all_regions(frame.width, frame.height)
+        # The regions are laid out for the *window*; drawing the ones derived
+        # from the (possibly halved) capture would outline the wrong boxes.
+        regions = all_regions(*frame.viewport)
         idx = 0
         for name, box in regions.items():
-            outline(img, box, (255, 64, 64) if idx % 2 else (64, 200, 255))
+            outline(img, box, (255, 64, 64) if idx % 2 else (64, 200, 255),
+                    firm=(frame.viewport != (frame.width, frame.height)))
             idx += 1
         write_png(args.snapshot, img)
         print(f"\nwrote {args.snapshot} ({frame.width}x{frame.height}) with {len(regions)} regions outlined")

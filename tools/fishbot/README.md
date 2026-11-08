@@ -79,7 +79,8 @@ a machine with no game installed, the plumbing is fine.
 
 Useful flags: `--scale 0.5` (capture size, default half), `--capture bitblt`
 (if the default `printwindow` comes back black), `--window-title "FiveM"`,
-`--once 50` (stop after N fish), `--no-alert` (no beeps).
+`--once 50` (stop after N fish), `--no-alert` (no beeps), `--start-now` (skip
+F9), `--interact-key e` (if your server rebinds the interaction key).
 
 ### What it remembers
 

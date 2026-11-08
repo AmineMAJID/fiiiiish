@@ -84,7 +84,8 @@ def test_snapshot() -> None:
     from fishbot.geometry import all_regions
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "snap.png")
-        img = simhud.render_fight(640, 360, 0.4, 0.5, "left", "sea").copy()
+        img = simhud.render_fight(640, 360, 0.4, 0.5, "left", "sea",
+                                  fit=(1280, 720)).copy()
         regions = all_regions(1280, 720)
         for i, box in enumerate(regions.values()):
             report.outline(img, box, (255, 64, 64) if i % 2 else (64, 200, 255))

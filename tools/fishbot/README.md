@@ -204,6 +204,7 @@ tools/fishbot/
     test_fight.py   the controller against the simulated mini-game
     test_e2e.py     the whole bot against a fake game, through the real vision
     test_cli.py     settings, reporter, snapshot writer, and the program itself
+    test_capture.py the capture path over a fake user32/gdi32 (handles, RGB order)
     fakegame.py     that fake game (renders frames, reacts to injected input)
     tune.py         sweep helper for controller parameters
 ```
@@ -215,6 +216,7 @@ python -m tests.test_vision
 python -m tests.test_fight
 python -m tests.test_e2e
 python -m tests.test_cli
+python -m tests.test_capture
 ```
 
 `tests.test_e2e` is the honest one: the bot is given nothing but a rendered frame

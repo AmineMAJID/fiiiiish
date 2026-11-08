@@ -124,7 +124,7 @@ What is read, and how:
 | has a fish bitten? | the countdown ring | ring circumference coverage |
 | cast power | the power card | vertical fill height |
 | KEEP or RELEASE? | the catch card | two dark plates with bright text |
-| is the bag full? | the toast stack | red pixels |
+| is something wrong? | the notification card | header bar + icon plate + flat panel |
 
 Every detector compares a region against itself or its neighbours rather than
 against an absolute colour, so night, weather, brightness and PostFX settings do
@@ -176,13 +176,24 @@ The tool only acts on evidence the resource itself publishes:
   when the bite HUD is on screen and never touches the keyboard during a fight.
 * **It does not click a catch card twice**, even though a capture is a snapshot
   and the card is still visible in the frame after the click.
-* **It does not guess at a full bag.** A red toast stops it and calls you.
+* **It does not guess at a full bag.** A red notification card stops it and
+  calls you — and only a card that *is* a card: the resource paints the same
+  red for a full bag, a refused cast, a broken rod or water you are not facing,
+  so the tool reads the card's structure (a header bar across its top edge, an
+  icon plate of the same colour, a flat dark panel beside them) and refuses
+  everything else in that corner — a red boat, a shark, another script's UI.
 
 ## When it stops
 
-* **Red toast on screen** (what the resource shows when the inventory refuses a
-  fish): pause + beep. It does not guess, does not try to sell for you, does not
-  switch to RELEASE behind your back. Clear the bag, press `F9`.
+* **A red notification card on screen**: pause + beep, and it says which slot
+  of the stack the card was in and how it looked. The resource uses that one
+  card for every refusal — the inventory declining a fish (`BAG_FULL`), a cast
+  the game will not accept, a broken rod, water the player is not facing — and
+  the card's text is what tells them apart. The tool reads structure, not text,
+  so it does not pretend to know which one it was: it stops and lets you read
+  the card. Nothing is lost by stopping (the fish is already landed, a refused
+  cast is one `E`), whereas working through a refusal is how a fish is thrown
+  away. If it was the bag: empty it and press `F9`.
 * **A fight that will not end** (75 s): stop, so it cannot sit there reeling
   forever.
 * **Black capture**: it says so and explains what to change, rather than looping

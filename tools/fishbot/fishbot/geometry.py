@@ -278,14 +278,28 @@ def catch_modal_layout(fw: int, fh: int) -> Dict[str, Rect]:
 
 
 # ── notifications (used to spot "inventory full" style toasts) ───────────────
+#: A notification card, in rem, from ``_box_1kes5``.  The stack is only in the
+#: bottom-left corner of the viewport, so a tall window (which makes ``rem``
+#: large) starts clipping the cards: the column is ``min(21.25rem, ...)`` wide
+#: and ``5 * 3.4rem`` tall out of a height that is already ``67.5 * rem``.
+_NOTIFY_W = 21.25
+_NOTIFY_BOX_H = 3.4375
+_NOTIFY_GAP = 0.5
+
+
 def notify_layout(fw: int, fh: int, slots: int = 5) -> Dict[str, object]:
     """``_container_167sm``: fixed, left 1rem, top 50 %, translateY(-50 %).
-    Each ``_box_1kes5`` is 100 % of the container width, ~4.4rem tall, 0.5rem
-    apart going down from the first one."""
+
+    Each ``_box_1kes5`` is ``_NOTIFY_BOX_H`` rem tall (progress bar + the padded
+    row: a 2.25rem icon plate, or an 0.6875 + 0.75rem pair of text lines),
+    ``_NOTIFY_GAP`` rem apart.  Getting this wrong does not just misplace the
+    boxes - it makes the *bottom* of the stack overlap a fish, and every red
+    pixel in that overlap reads as "error toast".
+    """
     u = rem(fw, fh)
-    box_w = min(22.0 * u, 0.42 * fw)
-    box_h = 4.4 * u
-    gap = 0.5 * u
+    box_w = min(_NOTIFY_W * u, 0.42 * fw)
+    box_h = _NOTIFY_BOX_H * u
+    gap = _NOTIFY_GAP * u
     total = slots * box_h + (slots - 1) * gap
     top = fh / 2.0 - total / 2.0
     boxes = [rect(1.0 * u / fw, (top + i * (box_h + gap)) / fh, box_w / fw, box_h / fh)

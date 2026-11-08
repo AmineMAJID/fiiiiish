@@ -101,7 +101,11 @@ Si un combat part en vrille, `F11` met en pause immédiatement.
 - Il ne lance **que** quand la clé `E` du HUD est verte.
 - Pendant un combat il ne touche **que** la souris (la caméra), jamais le clavier.
 - Il clique `KEEP`, jamais `RELEASE`.
-- Sac plein → il bipe, s'arrête, et attend. Tu vides le sac, `F9`, il repart.
+- Une **carte d'erreur rouge** → il bipe, s'arrête et te dit dans quel slot elle
+  était. Le jeu se sert de la même carte rouge pour « sac plein », « lancer
+  refusé », « canne cassée », « tu ne regardes pas l'eau » : le bot ne lit pas le
+  texte, donc il ne devine pas laquelle c'est — il s'arrête et te laisse lire.
+  Si c'était le sac : tu le vides, `F9`, il repart.
 
 ---
 
@@ -115,6 +119,7 @@ Copie-moi la sortie console (elle dit déjà beaucoup) et, si c'est visuel,
 | `cannot cast: the game's cast prompt is blocked` | il voit bien la clé grise : problème de position/depth côté jeu, pas du bot |
 | `no reeling HUD after the strike` | le ferrrage rate, ou le HUD du combat n'est pas lu |
 | `fight timed out` | le contrôleur ne progresse pas : mauvais mapping souris/sensibilité |
+| `paused - the game showed an error card` alors que ton sac n'est pas plein | regarde `fishbot-snapshot.png` : la pile de notifications y est entourée en **orange**. Si un rectangle orange tombe sur autre chose que la colonne de cartes en bas à gauche, c'est de la géométrie, envoie-moi l'image |
 
 Ce dernier cas est réglable sans moi : `--sensitivity` fixe le point de départ
 (en counts par pourcent de tension ; il s'auto-calibre ensuite et s'en souvient

@@ -130,7 +130,9 @@ def test_pause_on_full_bag() -> None:
     loop = Loop(game)
     loop.run_until_fish(seconds=240, target=1)
     game.toast_error = True
-    loop.run(seconds=1.0)
+    # The reader waits ``toast_grace`` for the card's slide-in to finish before
+    # believing it (the card lives 5 s, so nothing is missed by waiting).
+    loop.run(seconds=2.5)
     check("paused on the red toast", loop.bot.status.state == PAUSED,
           f"state={loop.bot.status.state} reason={loop.bot.status.paused_reason!r}")
     before = loop.bot.status.casts
@@ -139,6 +141,9 @@ def test_pause_on_full_bag() -> None:
           f"casts moved {before} -> {loop.bot.status.casts}")
     check("the pause is sticky until the user says resume", loop.bot.paused, "still paused")
     loop.bot.resume()
+    loop.run(seconds=1.0)
+    check("resuming with the card still on screen does not bounce back",
+          not loop.bot.paused, f"reason={loop.bot.status.paused_reason!r}")
     game.toast_error = False
     loop.run(seconds=1.0)
     check("resumed cleanly", loop.bot.status.state != PAUSED and not loop.bot.paused,
@@ -149,6 +154,47 @@ def test_pause_on_full_bag() -> None:
     loop.run_until_fish(seconds=180, target=before + 1)
     check("fishing continues after the resume", len(game.decisions) > before,
           f"decisions {before} -> {len(game.decisions)}")
+
+
+def test_no_pause_without_a_flag() -> None:
+    """What the user hit: a pause announced a full bag with an empty bag.
+
+    ``NOTIFY_INVENTORY_FULL`` is a red card, but so are the other eight failure
+    paths of the resource - a refused cast, a broken rod, water the player is
+    not facing - and a busy HUD, a shark, a lit campfire or another script's UI
+    can all put red in the same corner.  The three cases below are what the bot
+    must *not* react to; ``test_pause_on_full_bag`` above is what it must.
+    """
+    print("\n[nothing that is not an error card may stop the bot]")
+    game = FakeGame(seed=5)
+    loop = Loop(game)
+    loop.run_until_fish(seconds=240, target=1)
+    before = loop.bot.status.casts
+
+    # 1. a green card: the resource also confirms successes that way
+    game.toast_error = False
+    game.toast_kind = "success"
+    loop.run(seconds=2.0)
+    check("a success card does not pause", loop.bot.status.state != PAUSED,
+          f"state={loop.bot.status.state} reason={loop.bot.status.paused_reason!r}")
+
+    # 2. a red rectangle the size of a card, no bar, no plate, no panel
+    game.toast_kind = "block"
+    loop.run(seconds=2.0)
+    check("a plain red block does not pause", loop.bot.status.state != PAUSED,
+          f"state={loop.bot.status.state} reason={loop.bot.status.paused_reason!r}")
+
+    # 3. a red card-shaped fish crossing the corner the reader watches
+    game.toast_kind = "fish"
+    loop.run(seconds=2.0)
+    check("a red fish in that corner does not pause", loop.bot.status.state != PAUSED,
+          f"state={loop.bot.status.state} reason={loop.bot.status.paused_reason!r}")
+
+    game.toast_kind = None
+    loop.run(seconds=2.0)
+    check("the bot kept casting through all of it", loop.bot.status.casts > before,
+          f"casts {before} -> {loop.bot.status.casts}")
+    check("nothing was decided wrongly", all(game.decisions), f"{game.decisions}")
 
 
 def test_resolutions() -> None:
@@ -277,6 +323,7 @@ def main() -> int:
     test_wrong_sensitivity()
     test_release_mode()
     test_pause_on_full_bag()
+    test_no_pause_without_a_flag()
     test_resolutions()
     test_start_mid_fight()
     test_cast_card_blocks_second_cast()

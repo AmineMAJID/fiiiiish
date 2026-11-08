@@ -276,15 +276,63 @@ def render_depth_card(fw: int, fh: int, can_cast: bool, world: str = "sea",
     return img
 
 
+def render_toast(fw: int, fh: int, kind: str = "error", world: str = "sea",
+                 fit: Optional[Tuple[int, int]] = None, slot: int = 0) -> "np.ndarray":
+    """A notification card, drawn the way ``_box_1kes5`` lays one out.
+
+    ``kind`` picks the accent (``Fb`` in the bundle): error #ef4444, warning
+    #f59e0b, success #22c55e, info #3b82f6.  The header bar spans the card's
+    whole top edge and the icon plate carries the same colour, which is what
+    the reader locks on to.
+    """
+    img = _blank(fw, fh, world)
+    # The layout is in *window* fractions (``notify_layout``) while the drawing
+    # happens on the canvas, which is a halved capture most of the time: ``rem``
+    # has to be scaled down with it, or the plate comes out twice its real size,
+    # which the reader - correctly - refuses to believe.
+    win = _fit(fw, fh, fit)
+    u = rem(*win)
+    ux, uy = u * fw / float(win[0]), u * fh / float(win[1])
+    lay = notify_layout(*win)
+    box = lay["boxes"][slot]  # type: ignore[index]
+    accent = {"error": RED, "warning": (245, 158, 11), "success": (34, 197, 94),
+              "info": (59, 130, 246)}.get(kind, RED)
+    h = img.shape[0]
+    _fill(img, box, (23, 32, 51))                      # the dark panel
+    # the header bar: 0.1875rem across the whole top edge, never under 1 px
+    _fill(img, type(box)(box.x, box.y, box.w, max(1.0, 0.1875 * uy) / h), accent)
+    # The icon plate: 2.25rem square, 0.875rem in, 0.6875rem down.  It is a
+    # *tinted* plate carrying a coloured glyph (``backgroundColor:
+    # rgba(accent, .14)`` plus the lucide icon), not a solid block of colour.
+    plate = type(box)(box.x + 0.875 * ux / fw, box.y + 0.6875 * uy / h,
+                      2.25 * ux / fw, 2.25 * uy / h)
+    tint = tuple(int(round(c * 0.22 + d * 0.78)) for c, d in zip(accent, (15, 23, 43)))
+    _fill(img, plate, tint)
+    gx, gy = plate.x + plate.w * 0.30, plate.y + plate.h * 0.30
+    gw, gh = plate.w * 0.40, plate.h * 0.40
+    sx = max(2.0, round(0.16 * plate.w * fw)) / float(fw)   # never 1 px wide
+    sy = max(2.0, round(0.16 * plate.h * h)) / float(h)
+    _fill(img, type(box)(gx, gy, gw, sy), accent)                     # square glyph
+    _fill(img, type(box)(gx, gy + gh, gw, sy), accent)
+    _fill(img, type(box)(gx, gy, sx, gh), accent)
+    _fill(img, type(box)(gx + gw, gy, sx, gh), accent)
+
+    # Title and message, to the right of the plate, as words with gaps rather
+    # than solid blocks: a card whose body is painted over is not a card.
+    def _words(x: float, y: float, width: float, height: float, rgb, count: int,
+               fill: float) -> None:
+        gap = width * 0.06
+        span = (width - gap * (count - 1)) / float(count)
+        for i in range(count):
+            _fill(img, type(box)(x + i * (span + gap), y, span * fill, height), rgb)
+
+    text_x = plate.x2 + 0.6875 * ux / fw
+    text_w = max(1e-3, box.x2 - 0.875 * ux / fw - text_x)
+    _words(text_x, box.y + 0.80 * uy / h, text_w * 0.62, 0.95 * uy / h, accent, 2, 0.62)
+    _words(text_x, box.y + 1.95 * uy / h, text_w, 0.80 * uy / h, (148, 163, 184), 4, 0.66)
+    return img
+
+
 def render_error_toast(fw: int, fh: int, world: str = "sea",
                        fit: Optional[Tuple[int, int]] = None) -> "np.ndarray":
-    img = _blank(fw, fh, world)
-    lay = notify_layout(*_fit(fw, fh, fit))
-    box = lay["boxes"][0]  # type: ignore[index]
-    _round_panel(img, box, c1=(15, 23, 43), c2=(29, 41, 61))
-    _fill(img, type(box)(box.x, box.y, box.w, box.h * 0.05), RED)
-    _fill(img, type(box)(box.x + box.w * 0.06, box.y + box.h * 0.3,
-                         box.w * 0.12, box.h * 0.4), RED)
-    _fill(img, type(box)(box.x + box.w * 0.24, box.y + box.h * 0.4,
-                         box.w * 0.6, box.h * 0.16), TEXT)
-    return img
+    return render_toast(fw, fh, "error", world, fit=fit)

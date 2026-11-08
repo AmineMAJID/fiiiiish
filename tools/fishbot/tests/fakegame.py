@@ -124,6 +124,10 @@ class FakeGame:
         self.camera_offset = 0.0     # the signed "angle" the Lua would compute
         self.modal_open = False
         self.toast_error = False
+        #: What to paint in the notification corner when ``toast_error`` is set:
+        #: ``None`` = a real error card, or one of the impostors the reader must
+        #: refuse (``"success"``, ``"block"``, ``"fish"``).
+        self.toast_kind = None
         self.show_depth = True       # the depth card is up whenever the rod is out
         self.blocked = False         # the game refusing a cast (too deep, in a car)
         self.injector: Optional[FakeInjector] = None
@@ -183,13 +187,22 @@ class FakeGame:
             img = simhud.render_depth_card(self.vw, self.vh, not self.blocked,
                                            self.world, fit=(self.w, self.h))
         if self.toast_error:
-            toast = simhud.render_error_toast(self.vw, self.vh, self.world,
-                                              fit=(self.w, self.h))
-            # composite only the toast area
             from fishbot.geometry import notify_layout
             box = notify_layout(self.w, self.h)["boxes"][0]
             x1, y1, w, h = box.to_px(self.vw, self.vh)
-            img[y1:y1 + h, x1:x1 + w] = toast[y1:y1 + h, x1:x1 + w]
+            if self.toast_kind in (None, "error", "warning", "success", "info"):
+                toast = simhud.render_toast(self.vw, self.vh, self.toast_kind or "error",
+                                            self.world, fit=(self.w, self.h))
+                img[y1:y1 + h, x1:x1 + w] = toast[y1:y1 + h, x1:x1 + w]
+            elif self.toast_kind == "block":
+                # red where a card would be, but flat: no bar, plate or panel
+                img[y1:y1 + h, x1:x1 + w] = (239, 68, 68)
+            elif self.toast_kind == "fish":
+                # a red blob with a fish's shape crossing the same corner
+                cy, cx = y1 + h // 2, x1 + w // 5
+                ys, xs = np.ogrid[:img.shape[0], :img.shape[1]]
+                blob = ((ys - cy) ** 2) / float(h * h) + ((xs - cx) ** 2) / ((w * 0.6) ** 2) < 0.25
+                img[blob] = (255, 120, 90)
         return img
 
     # ── input from the bot ──────────────────────────────────────────────────

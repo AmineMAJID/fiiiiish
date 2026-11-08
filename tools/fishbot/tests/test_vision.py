@@ -20,7 +20,8 @@ except Exception:
     HAVE_NUMPY = False
 
 from fishbot import simhud, vision
-from fishbot.geometry import catch_modal_layout, fight_layout, all_regions, rem
+from fishbot.geometry import (catch_modal_layout, fight_layout, all_regions,
+                              notify_layout, rem)
 
 RESOLUTIONS = [
     (1920, 1080), (2560, 1440), (3840, 2160), (1280, 720),
@@ -197,12 +198,92 @@ def test_catch_modal() -> None:
 
 
 def test_error_toast() -> None:
-    print("\n[error toast: 'inventory full' style]")
-    for fw, fh in ((1920, 1080), (2560, 1440), (1280, 720)):
-        img = simhud.render_error_toast(fw, fh)
-        check(f"error toast detected at {fw}x{fh}", vision.read_error_toast(frame(img, fw, fh)))
+    print("\n[notification cards: the four severities the resource paints]")
+    for fw, fh in ((1920, 1080), (2560, 1440), (1280, 720), (1080, 1080)):
+        for world in WORLDS:
+            for kind in ("error", "warning", "success", "info"):
+                img = simhud.render_toast(fw, fh, kind, world)
+                got = vision.read_toasts(frame(img, fw, fh))
+                check(f"{kind} card read as {kind} at {fw}x{fh} ({world})",
+                      got.present and got.kind == kind, str(got))
+                check(f"...and only a red one stops the bot at {fw}x{fh} ({world})",
+                      vision.read_error_toast(frame(img, fw, fh)) == (kind == "error"),
+                      str(got))
         plain = simhud._blank(fw, fh, "sea")
         check(f"no false toast at {fw}x{fh}", not vision.read_error_toast(frame(plain, fw, fh)))
+
+
+def test_toast_slots() -> None:
+    print("\n[the card can be anywhere in the stack, not just the first slot]")
+    for fw, fh in ((1920, 1080), (1280, 720)):
+        for slot in range(5):
+            img = simhud.render_toast(fw, fh, "error", "night", slot=slot)
+            got = vision.read_toasts(frame(img, fw, fh))
+            check(f"error card in slot {slot} at {fw}x{fh}",
+                  got.present and got.kind == "error" and got.slot == slot, str(got))
+
+
+def test_toast_false_positives() -> None:
+    """The bug this file exists to prevent.
+
+    A first version of the reader asked "is there a lot of red in this corner
+    of the screen", which is true of red water, a red boat, a lit campfire, a
+    shark, a blood splash or another script's UI.  On a real machine that made
+    the bot stop and announce a full bag with an empty bag.  A card is now
+    identified by its *structure* - a header bar spanning the card's top edge,
+    in the same colour as the icon plate on its left, over a flat dark panel -
+    so a red thing that is not a card must not register at all.
+    """
+    print("\n[red things that are not notification cards]")
+
+    def card(fw: int, fh: int) -> Tuple[int, int, int, int]:
+        box = notify_layout(fw, fh)["boxes"][0]
+        return box.to_px(fw, fh)
+
+    for fw, fh in ((1920, 1080), (1280, 720)):
+        # 1. a plain red rectangle filling the whole card: right place, right
+        #    colour, no bar, no plate, no dark panel
+        img = simhud._blank(fw, fh, "sea").copy()
+        left, top, bw, bh = card(fw, fh)
+        img[top:top + bh, left:left + bw] = (200, 40, 40)
+        check(f"a red block in the toast corner is not a card at {fw}x{fh}",
+              not vision.read_error_toast(frame(img, fw, fh)))
+
+        # 2. a red thick frame: looks like a bar along the top edge, but there
+        #    is no plate of that colour inside it
+        img = simhud._blank(fw, fh, "sea").copy()
+        edge = max(2, bh // 12)
+        img[top:top + edge, left:left + bw] = (239, 68, 68)
+        img[top:top + bh, left:left + edge] = (239, 68, 68)
+        img[top:top + bh, left + bw - edge:left + bw] = (239, 68, 68)
+        img[top + bh - edge:top + bh, left:left + bw] = (239, 68, 68)
+        check(f"a red frame in the toast corner is not a card at {fw}x{fh}",
+              not vision.read_error_toast(frame(img, fw, fh)))
+
+        # 3. a bar over a *bright* panel: a game overlay or another script, not
+        #    the resource's dark card
+        img = simhud._blank(fw, fh, "sea").copy()
+        img[top:top + bh, left:left + bw] = (208, 206, 190)
+        img[top:top + edge, left:left + bw] = (239, 68, 68)
+        check(f"a red bar on a bright panel is not a card at {fw}x{fh}",
+              not vision.read_error_toast(frame(img, fw, fh)))
+
+        # 4. a solid red rectangle the size of the card: right place, right
+        #    colour, but no dark panel with grey text beside the plate
+        img = simhud._blank(fw, fh, "sea").copy()
+        img[top:top + bh, left:left + bw] = (239, 68, 68)
+        check(f"a solid red card-sized rectangle is not a card at {fw}x{fh}",
+              not vision.read_error_toast(frame(img, fw, fh)))
+
+        # 5. a fish: a saturated blob straddling the card's left edge, where the
+        #    plate sits, and nothing square about it
+        img = simhud._blank(fw, fh, "sea").copy()
+        cy, cx = top + bh // 2, left + bw // 5
+        ys, xs = np.ogrid[:fh, :fw]
+        blob = ((ys - cy) ** 2) / (bh ** 2) + ((xs - cx) ** 2) / ((bw * 0.6) ** 2) < 0.25
+        img[blob] = (255, 120, 90)
+        check(f"a fish-shaped red blob in the corner is not a card at {fw}x{fh}",
+              not vision.read_error_toast(frame(img, fw, fh)))
 
 
 def test_geometry_sanity() -> None:
@@ -238,6 +319,8 @@ def main() -> int:
     test_scaled_capture()
     test_catch_modal()
     test_error_toast()
+    test_toast_slots()
+    test_toast_false_positives()
     print()
     if failures:
         print(f"{len(failures)} FAILURES")

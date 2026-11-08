@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover - exercised on machines without numpy
 from .geometry import (
     FightLayout,
     Rect,
+    rem,
     bite_layout,
     cast_layout,
     catch_modal_layout,
@@ -475,17 +476,157 @@ def read_catch_modal(frame: Frame) -> CatchReading:
                         confidence=min(left_txt, right_txt) * 20.0 if ok else 0.0)
 
 
-def read_error_toast(frame: Frame) -> bool:
-    """True when a red (error) toast is showing in the notification stack."""
+@dataclass
+class ToastReading:
+    """Whether a notification card is on screen, and what kind.
+
+    The stack is read *structurally* rather than "is there red somewhere in
+    this corner": a card only counts when it has a bright header strip across
+    its top edge (the progress bar, which is the width of the card and sits at
+    the very top), an icon plate on the left, and a dark panel between them.
+    Anything else in that corner - a fish, a shark, red water, a boat, another
+    script's UI - is not a toast.
+    """
+
+    #: A card is one flat gradient with a few bright things on it, so its
+    #: brightness stays within a narrow band; a patch of game world does not.
+
+    present: bool = False
+    kind: Optional[str] = None      # 'error' | 'warning' | 'success' | 'info'
+    confidence: float = 0.0
+    strip: float = 0.0              # share of the top edge that is the bar
+    accent: float = 0.0             # share of the left plate that is the bar's colour
+    slot: int = 0                   # 0 = newest; older cards stack downwards
+
+    def __bool__(self) -> bool:
+        return self.present
+
+    def __str__(self) -> str:
+        if not self.present:
+            return "none"
+        return (f"{self.kind} slot={self.slot} strip={self.strip:.2f} "
+                f"accent={self.accent:.2f} conf={self.confidence:.2f}")
+
+
+#: The header bar and the icon plate are the same colour, per severity, and it
+#: is what the card is made of (``Fb.ERROR.bar = #ef4444`` and so on).
+_ACCENTS = (("error", (239, 68, 68)), ("warning", (245, 158, 11)),
+            ("success", (34, 197, 94)), ("info", (59, 130, 246)))
+
+#: The bar is the top edge of the card; the plate is 2.25rem wide with 0.875rem
+#: of padding to its left (``_main_1kes5``: gap 0.6875, padding 0.6875 0.875).
+_BAR_H_REM = 0.1875
+_PLATE_W_REM = 2.25
+_PLATE_GAP_REM = 0.875
+
+
+def toast_slot(frame: Frame) -> Optional[int]:
+    """Which slot of the stack the error card is in (0 = the newest one)."""
+    reading = read_toasts(frame)
+    return reading.slot if reading.present else None
+
+
+def _accent_mask(arr, rgb):
+    """Pixels that are ``rgb`` (tight) and clearly coloured and lit."""
+    return (color_score(arr, rgb, tol=0.12) & (saturation(arr) > 0.45)
+            & (value(arr) > 0.35))
+
+
+def _strip_coverage(arr, rgb) -> float:
+    """How much of the card's top edge is painted ``rgb``, 0..1.
+
+    Measured *per column* rather than per pixel: the bar is 3 px tall in the
+    stylesheet and rounds to two or three px in the capture, so a raw area
+    fraction loses a third of its value to rounding, while "is this column
+    covered at all" does not.
+    """
+    mask = _accent_mask(arr, rgb)
+    if mask.size == 0 or mask.shape[1] == 0:
+        return 0.0
+    return float(mask.any(axis=0).mean())
+
+
+def read_toasts(frame: Frame) -> ToastReading:
+    """One pass over the notification stack, or an empty reading."""
     lay = notify_layout(*frame.viewport)
-    for box in lay["boxes"]:  # type: ignore[index]
-        roi = frame.crop(box)
-        if roi.size == 0:
+    u = rem(*frame.viewport)
+    best = ToastReading()
+    for index, box in enumerate(lay["boxes"]):  # type: ignore[index]
+        # The strip: the card's top edge, edge to edge.  The band is given a
+        # pixel of slack and a floor of three rows, because at a halved capture
+        # the whole bar is one or two pixels and a single row of rounding
+        # between this box and the card's own edge loses all of it.
+        strip_box = Rect(box.x, max(0.0, box.y - 1.5 / frame.height), box.w,
+                         max(3.0, _BAR_H_REM * u + 2.0) / frame.height)
+        strip_roi = frame.crop(strip_box)
+        if strip_roi.size == 0:
             continue
-        red = color_count(roi, ERROR, tol=0.26, sat_min=0.35, val_min=0.25)
-        if red > 40:
-            return True
-    return False
+        # the plate: 2.25rem square, 0.875rem in from the left, 0.6875rem down
+        plate_box = Rect(box.x + _PLATE_GAP_REM * u / frame.width,
+                         box.y + 0.6875 * u / frame.height,
+                         _PLATE_W_REM * u / frame.width, _PLATE_W_REM * u / frame.height)
+        plate_roi = frame.crop(plate_box)
+        if plate_roi.size == 0:
+            continue
+
+        # Which accent is this card?  Classify rather than threshold: amber and
+        # red are only 0.60 apart in normalised RGB, so a loose "is it reddish"
+        # test calls a warning an error, and the runner-up would then be
+        # within noise.  The tight tolerance plus the ratio make them distinct.
+        scores = sorted(
+            ((_strip_coverage(strip_roi, rgb), kind, rgb) for kind, rgb in _ACCENTS),
+            key=lambda t: t[0], reverse=True)
+        best_strip, best_kind, best_rgb = scores[0]
+        runner_up = scores[1][0]
+        if best_strip < 0.85 or (runner_up > 0.02 and best_strip < 1.6 * runner_up):
+            continue
+        plate_area = float(plate_roi.shape[0] * plate_roi.shape[1])
+        best_accent = color_count(plate_roi, best_rgb, tol=0.12,
+                                  sat_min=0.45, val_min=0.35) / plate_area
+
+        # Both must hold, and they are the same colour: a bright bar with a
+        # plate of that same colour in it, in exactly the places the card puts
+        # them.  A fish, a buoy, a red boat or another script's UI is not that.
+        if best_accent < 0.05:
+            continue
+        # The body of the card - everything to the right of the plate - is the
+        # dark panel with grey text on it, *not* the accent colour.  Without
+        # this, a flat red rectangle the size of a card would pass: it has a
+        # full-width strip and a red square exactly where the plate is.
+        body_box = Rect(plate_box.x2 + 0.1 * u / frame.width, box.y + 0.4 * box.h,
+                        max(1e-6, box.x2 - plate_box.x2 - 0.2 * u / frame.width),
+                        box.h * 0.55)
+        body = frame.crop(body_box.inset(0.0, 0.15))
+        if body.size == 0:
+            continue
+        body_area = float(body.shape[0] * body.shape[1])
+        body_accent = color_count(body, best_rgb, tol=0.12, sat_min=0.45,
+                                  val_min=0.35) / body_area
+        if body_accent > 0.12 or float(value(body).mean()) > 0.45:
+            continue
+        # And the card must be a panel, not a busy patch of world: a card is
+        # one flat gradient with a bar, a plate and two lines of text on it.
+        # Water, foliage or a lit surface carries far more variation than that.
+        card = frame.crop(box.inset(0.02, 0.25))
+        if card.size and float(value(card).std()) > 0.35:
+            continue
+        conf = min(1.0, best_strip) * min(1.0, best_accent / 0.10)
+        if conf > best.confidence:
+            best = ToastReading(present=True, kind=best_kind, confidence=conf,
+                                strip=best_strip, accent=best_accent, slot=index)
+    return best
+
+
+def read_error_toast(frame: Frame) -> bool:
+    """True when a *red* notification card is on screen.
+
+    Red is what the resource uses for "this failed": the inventory refusing a
+    fish, a refused cast, a broken rod, water not in front of the player.  The
+    tool treats all of them the same way - stop and ask - because guessing past
+    a failure is how a fish gets wasted.
+    """
+    reading = read_toasts(frame)
+    return reading.present and reading.kind == "error"
 
 
 #: The action key's green plate: #4ade80 when the cast is allowed, #334155 when

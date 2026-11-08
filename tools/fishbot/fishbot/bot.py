@@ -118,8 +118,18 @@ class BotConfig:
     by pausing and calling the user back."""
 
     pause_on_error_toast: bool = True
-    """A red toast during a keep means the bag refused the fish.  Rather than
-    guessing, the tool stops, beeps, and waits for the user to sell and resume."""
+    """A red notification card means an action was refused.  Rather than
+    guessing which one, the tool stops, beeps, and lets the player read the
+    message and decide - fixing a full bag, a broken rod or a bad spot are all
+    the same "you, not me" situation."""
+
+    toast_grace: float = 1.5
+    """How long a red card must stay faded-in before it counts (seconds).
+
+    The card slides in from the left over ~350 ms, so during the first frames
+    only part of it is where the reader looks.  Requiring it to still be there
+    a moment later costs nothing - the card lives 5 s - and rejects the one-frame
+    red flash of a screen-space effect caught mid-transition."""
 
     keep_click_delay: float = 0.35
     """Let the modal render (and the user see it) before clicking."""
@@ -247,6 +257,10 @@ class FishingBot:
         self._fight_seen = False
         self._settle_limit = 0.0
         self._decided_for: Optional[float] = None
+        self._toast_since: Optional[float] = None
+        self._toast_slot: Optional[int] = None
+        self._toast_reason: str = ""
+        self._toast_mute = False
 
     # ── control ------------------------------------------------------------
     def stop(self) -> None:
@@ -259,6 +273,12 @@ class FishingBot:
     def resume(self) -> None:
         self._pause = False
         self.status.paused_reason = ""
+        # A card stays on screen for 5 s.  Resuming while the one that stopped
+        # the bot is still fading out must not bounce straight back into a
+        # pause: the player has read it and said "go", so that card is spent.
+        # A *new* card (one drawn after the card leaves the screen) still stops
+        # it, which is what matters.
+        self._toast_mute = self._toast_since is not None
 
     @property
     def stopped(self) -> bool:
@@ -610,16 +630,54 @@ class FishingBot:
         self._settle_limit = self.config.post_decision_delay
         self._go(SETTLE, "decided")
 
-    # ── pause on a full bag ------------------------------------------------
+    # ── pause on a refusal ------------------------------------------------
     def check_toasts(self, frame) -> None:
-        """Called by the runner in every state: a red toast usually means the
-        inventory refused the last fish (``NOTIFY_INVENTORY_FULL``), which is the
-        one thing the tool must not try to work around by itself."""
+        """Stop when the resource puts a red card on screen.
+
+        Called in every state.  What it reacts to is the *card*, not a guess
+        about the bag: the resource paints exactly one red card for ``BAG_FULL``
+        and for a refused cast, a broken rod, water the player is not facing -
+        and the card's own message text is what tells them apart.  The tool does
+        not read that text, so it does not pretend to know which one it was: it
+        stops, says which slot the card was in and how it looked, and lets the
+        player read it.  Nothing is lost by stopping - the fish is already
+        landed, and a refused cast costs an E - whereas working through a red
+        card is exactly how a fish gets thrown away.
+        """
         if not self.config.pause_on_error_toast:
+            self._toast_since = None
+            self._toast_slot = None
+            self._toast_mute = False
             return
-        if vision.read_error_toast(frame):
-            if not self._pause:
-                self.pause("error toast: bag full or action refused")
-                self._event("error", "paused - clear your inventory, then resume")
+
+        reading = vision.read_toasts(frame)
+        if not (reading.present and reading.kind == "error"):
+            self._toast_since = None
+            self._toast_slot = None
+            self._toast_mute = False       # the stack is clear again
+            return
+        if self._toast_mute:
+            return                        # the card we were already told about
+
+        now = self.clock()
+        if self._toast_since is None:
+            self._toast_since = now
+            self._toast_slot = reading.slot
+            # How it looked, in the tool's own words: enough for the user (and
+            # for me, if they paste it) to tell a real card apart from a HUD
+            # change, without claiming to know what the text said.
+            self._toast_reason = (f"slot {reading.slot + 1}, "
+                                  f"bar {reading.strip * 100:.0f} %, "
+                                  f"icon {reading.accent * 100:.0f} %")
+        # Let the slide-in finish before believing it.
+        if now - self._toast_since < self.config.toast_grace:
+            return
+        if self._pause:
+            return
+
+        self.pause(f"error card on screen ({self._toast_reason})")
+        self._event("error",
+                    f"paused - the game showed a red error card ({self._toast_reason}). "
+                    "Read it in game: if the bag is full, empty it and press F9.")
 
 

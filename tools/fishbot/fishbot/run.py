@@ -34,7 +34,11 @@ from typing import Optional
 from . import settings, vision
 from .bot import FishingBot, BotConfig
 from .controller import BotParams, FightController
-from .geometry import all_regions
+from .geometry import all_regions, notify_layout
+
+#: Where the reader looks for notification cards, as drawn in ``--snapshot``.
+TOAST_OUTLINE = (250, 204, 21)
+TOAST_OUTLINE_NAME = "orange"
 from .report import Reporter, outline, pace, write_png
 
 try:
@@ -55,7 +59,7 @@ def _frame_report(source) -> None:
     print(f"  bite       {vision.read_bite(frame)}")
     print(f"  reel       {vision.read_fight(frame)}")
     print(f"  catch      {vision.read_catch_modal(frame)}")
-    print(f"  red toast  {vision.read_error_toast(frame)}")
+    print(f"  toasts     {vision.read_toasts(frame)}")
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -151,8 +155,17 @@ def main(argv: Optional[list] = None) -> int:
             outline(img, box, (255, 64, 64) if idx % 2 else (64, 200, 255),
                     firm=(frame.viewport != (frame.width, frame.height)))
             idx += 1
+        # The notification stack is not part of ``all_regions`` (it is five
+        # slots of a scrolling column, not one HUD panel), and it is exactly
+        # what decides "bag full" - so outline where the reader looked.
+        toasts = vision.read_toasts(frame)
+        for slot in notify_layout(*frame.viewport)["boxes"]:
+            outline(img, slot, TOAST_OUTLINE, firm=(frame.viewport != (frame.width,
+                                                                       frame.height)))
         write_png(args.snapshot, img)
-        print(f"\nwrote {args.snapshot} ({frame.width}x{frame.height}) with {len(regions)} regions outlined")
+        print(f"\nwrote {args.snapshot} ({frame.width}x{frame.height}) with {len(regions)} "
+              f"regions outlined, notification stack in {TOAST_OUTLINE_NAME}")
+        print(f"  toasts     {toasts}")
         return 0
 
     reporter = Reporter(alert=args.alert)

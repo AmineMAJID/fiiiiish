@@ -237,8 +237,20 @@ def _monitor_rect(hwnd: int) -> Tuple[int, int, int, int]:
     return r.left, r.top, r.right - r.left, r.bottom - r.top
 
 
+def window_alive(hwnd: int) -> bool:
+    """True while the handle still names a real, visible window."""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    user32 = _user32()
+    return bool(user32.IsWindow(wt.HWND(hwnd)))
+
+
 def client_area(hwnd: Optional[int] = None, titles=("FiveM", "Grand Theft Auto V", "GTAV")) -> ClientArea:
     set_dpi_awareness()
+    if hwnd is not None and not window_alive(hwnd):
+        # The window we were following is gone (game restarted, or the player
+        # closed it): look again rather than failing every sample for ever.
+        hwnd = None
     if hwnd is None:
         hwnd = find_game_window(titles)
     if not hwnd:
@@ -250,6 +262,8 @@ def client_area(hwnd: Optional[int] = None, titles=("FiveM", "Grand Theft Auto V
     left, top, w, h = rect
     if w < 200 or h < 200:
         raise RuntimeError(f"the game window is only {w}x{h}; restore it and try again")
+    if _user32().IsIconic(wt.HWND(hwnd)):
+        raise RuntimeError("the game window is minimised")
     buf = ctypes.create_unicode_buffer(256)
     _user32().GetWindowTextW(hwnd, buf, 256)
     ml, mt, mw, mh = _monitor_rect(hwnd)

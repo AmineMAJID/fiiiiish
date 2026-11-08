@@ -212,7 +212,14 @@ def main(argv: Optional[list] = None) -> int:
                 # Keep the session alive; the loop resumes when it comes back.
                 if not warned_window:
                     warned_window = True
-                    reporter("error", f"lost the game window ({exc}); waiting for it")
+                    # Minimised is the common case (the player alt-tabbed) and
+                    # it is not a failure: say what to do and keep waiting.
+                    msg = str(exc)
+                    if "minimised" in msg:
+                        reporter("warn", "the game window is minimised - it will resume "
+                                         "when you restore it")
+                    else:
+                        reporter("error", f"lost the game window ({msg}); waiting for it")
                 time.sleep(0.5)
                 continue
             else:

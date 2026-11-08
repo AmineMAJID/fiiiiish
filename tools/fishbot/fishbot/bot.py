@@ -56,13 +56,20 @@ class BotConfig:
     animation (and its ``BeginCast`` event) has started before the button goes
     down."""
 
-    cast_hold: float = 0.62
+    cast_hold: float = 1.05
     """How long to hold the left button while charging.
 
-    The meter sweeps 0->100 % over 1.1 s and back, so this lands near the top of
-    the first sweep.  Power decides both distance and the size of the fish, and
-    anything below 5 % is refused by the server (``MIN_CAST_POWER``).
+    ``ChargeCastPower`` sweeps the meter 0->100 % over ``CHARGE_ANIM_DURATION``
+    (1.1 s) and back, and breaks the moment the button is released.  Stopping a
+    hair before the peak (~95 %) rather than exactly on it keeps a slow frame
+    from sampling the *descending* half, which would throw the cast short.  Full power casts furthest and hooks
+    the biggest fish; anything under 5 % is refused by the server
+    (``MIN_CAST_POWER``), and the charge itself expires after
+    ``CAST_MAX_TIME`` (6 s).
     """
+
+    power_sweep: float = 1.1
+    """``CHARGE_ANIM_DURATION`` / 1000: the meter's 0->100 % sweep time."""
 
     cast_settle: float = 0.9
     """Give the cast animation and line flight time before looking for a bite."""
@@ -369,13 +376,23 @@ class FishingBot:
             self._cast()
 
     def _cast(self) -> None:
+        """Press E, hold the button, let go.
+
+        ``ChargeCastPower`` starts the charge on E and cancels the whole cast if
+        E comes back up before the button does, so E is held down for the charge
+        rather than tapped - a tap would work only by accident, and would fail
+        the moment the charge lasted longer than the tap.
+        """
         cfg = self.config
-        self.injector.key("e")
+        self.injector.key_down("e")
         self.status.casts += 1
-        self._sleep(cfg.equip_delay)  # let the script arm the charge
-        self.injector.mouse_down("left")
-        self._sleep(cfg.cast_hold)   # charge: the meter is only live while held
-        self.injector.mouse_up("left")
+        try:
+            self._sleep(cfg.equip_delay)  # let the script arm the charge
+            self.injector.mouse_down("left")
+            self._sleep(cfg.cast_hold)    # the meter is only live while held
+            self.injector.mouse_up("left")
+        finally:
+            self.injector.key_up("e")
         self._go(BITE_WAIT, "cast sent")
         self._event("info", f"cast #{self.status.casts}")
 

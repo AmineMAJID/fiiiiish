@@ -90,6 +90,7 @@ def test_happy_path() -> None:
     check("kept counter tracks the decisions", st.fish_kept == len(game.decisions),
           f"kept={st.fish_kept} decisions={len(game.decisions)}")
     check("cast power was never refused", game.casts >= 3, f"casts={game.casts}")
+    check("casts were near full power", game.power >= 0.9, f"power={game.power:.2f}")
     print("     " + st.summary())
 
 
@@ -204,6 +205,27 @@ def test_no_click_during_fight() -> None:
     check("the fight state was exercised", FIGHT in states_seen, f"{sorted(states_seen)}")
 
 
+def test_mixed_conditions() -> None:
+    print("\n[randomised clients: sensitivity, band, mouse sign, bite timing]")
+    import random
+    rng = random.Random(2026)
+    for i in range(4):
+        counts = rng.choice([0.5, 0.9, 1.6, 3.0, 6.0])
+        band = rng.choice(["shallow", "mid", "deep", "abyss"])
+        inverted = bool(i % 2)
+        game = FakeGame(seed=900 + i, counts_per_pct=counts, band=band,
+                        inverted=inverted,
+                        bite_seconds=rng.choice([0.8, 1.6, 2.4]),
+                        window_seconds=rng.choice([1.2, 1.6, 2.0]))
+        loop = Loop(game, config=BotConfig(loop_hz=20.0, fight_timeout=90.0))
+        loop.run_until_fish(seconds=300, target=2)
+        ok = len(game.decisions) >= 2 and game.snapped == 0 and not game.mistakes
+        check(f"two fish from a {band} client at {counts} counts/%"
+              f"{' (inverted)' if inverted else ''}", ok,
+              f"decisions={len(game.decisions)} snaps={game.snapped} "
+              f"mistakes={game.mistakes[:1]}")
+
+
 def main() -> int:
     if not HAVE_NUMPY:
         print("numpy is required for the end-to-end tests")
@@ -217,6 +239,7 @@ def main() -> int:
     test_start_mid_fight()
     test_cast_card_blocks_second_cast()
     test_no_click_during_fight()
+    test_mixed_conditions()
     print()
     if failures:
         print(f"{len(failures)} FAILURES")

@@ -79,9 +79,11 @@ class FakeInjector:
 
     def key_down(self, name: str) -> None:
         self.events.append(("key_down", {"name": name}))
+        self.game.key_down(name)
 
     def key_up(self, name: str) -> None:
         self.events.append(("key_up", {"name": name}))
+        self.game.key_up(name)
 
 
 class FakeGame:
@@ -114,6 +116,7 @@ class FakeGame:
         self.power = 0.0
         self.charge_start = 0.0
         self.charging = False
+        self.held = set()
         self.cast_ready_at = 0.0
         self.bite_at = 0.0
         self.window_ends = 0.0
@@ -184,6 +187,17 @@ class FakeGame:
         return img
 
     # ── input from the bot ──────────────────────────────────────────────────
+    def key_down(self, name: str) -> None:
+        self.held.add(name.lower())
+        self.on_key(name)
+
+    def key_up(self, name: str) -> None:
+        self.held.discard(name.lower())
+        if name.lower() == "e" and self.state == CHARGING and not self.charging:
+            # `ChargeCastPower` cancels when E comes up before the button does
+            self.mistakes.append("E released before the button: the cast is cancelled")
+            self.state = IDLE
+
     def on_key(self, name: str) -> None:
         if name.lower() != "e":
             return

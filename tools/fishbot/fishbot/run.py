@@ -43,13 +43,89 @@ from .report import Reporter, outline, pace, write_png
 
 try:
     from .winapi import (FakeSource, HotkeyWatcher, Injector, ScreenSource,
-                         activate_window, client_area, foreground_window,
+                         activate_window, client_area, focus_of, foreground_window,
                          is_foreground, own_console_window, set_dpi_awareness,
                          window_alive)
 except Exception as exc:  # pragma: no cover - only on non-Windows
     print(f"fishbot needs Windows: {exc}", file=sys.stderr)
     raise SystemExit(2)
 
+
+
+def _selftest(source, injector, reporter) -> int:
+    """Prove, on this machine, that a key can be delivered - then exit.
+
+    "Nothing happens" was the hardest report to act on, because every layer can
+    say it is fine: the loop is running, the picture is being read, and yet no
+    key is pressed.  This closes that gap by doing the whole thing out loud, in
+    the order it happens: find the window, check the focus, take it if allowed,
+    read the picture, then send exactly one key and report whether Windows
+    accepted it.
+    """
+    ok = True
+    hwnd = _game_hwnd(source)
+    print("\nself-test of the input path\n" + "-" * 40)
+    if isinstance(source, FakeSource):
+        print("  window     a synthetic window: this proves the plumbing, not the game")
+        frame = source.grab()
+        print(f"  capture    {frame.width}x{frame.height} brightness "
+              f"{frame.mean_brightness():.2f}")
+        print("  key        skipped (a simulated run presses nothing)")
+        print("-" * 40)
+        print("  RESULT     simulation is healthy.  Run this without --simulate to "
+              "test the game.")
+        return 0
+    try:
+        area = source.area
+    except Exception as exc:
+        print(f"  window     FAILED: {exc}")
+        return 2
+    print(f"  window     {area.describe()}")
+    if not hwnd:
+        print("  hwnd       none - no window to send anything to")
+        return 2
+    if not injector.target_hwnd:
+        # The window has to be found *before* the injector is built, otherwise
+        # its foreground guard has nothing to compare against and refuses every
+        # event for ever - which looks exactly like "the tool does nothing".
+        injector.target_hwnd = hwnd
+        print(f"  hwnd       {hwnd} (attached to the injector)")
+
+    focus = focus_of(hwnd)
+    print(f"  focus      {focus} (game={hwnd}, foreground={focus.foreground}, "
+          f"console={focus.console})")
+    how = injector.ensure_foreground(area)
+    print(f"  activate   {how}")
+    if how == "refused":
+        ok = False
+        print("             Windows refused every way of focusing the game: click it once "
+              "by hand, then run this again.")
+
+    frame = source.grab()
+    print(f"  capture    {frame.width}x{frame.height} brightness "
+          f"{frame.mean_brightness():.2f}")
+    if frame.mean_brightness() < 0.02:
+        ok = False
+        print("             the picture is black: switch the game to borderless, or "
+              "try --capture bitblt")
+    crash = injector.explain()
+    print(f"  injector   {crash or 'ready to send'}")
+
+    if ok:
+        try:
+            injector.key("f", hold_ms=60)
+            print("  key        sent one F key (it does nothing in game)")
+        except Exception as exc:
+            ok = False
+            print(f"  key        REFUSED: {exc}")
+    print("-" * 40)
+    if ok:
+        print("  RESULT     the tool can drive the game on this machine.")
+        print("             If fishing still does nothing, the picture is not the "
+              "HUD:\n             run --snapshot and look at the boxes.")
+        return 0
+    print("  RESULT     input cannot be delivered yet - fix the line above.")
+    return 1
 
 
 # ── focus: the difference between "nothing happens" and "it is fishing" ─────
@@ -162,6 +238,9 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--dry-run", action="store_true",
                     help="read the screen and make decisions, but send no input")
     ap.add_argument("--probe", action="store_true", help="print the window and a HUD readout, then exit")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the whole input path - window, focus, capture, one "
+                         "key press - and report what works, then exit")
     ap.add_argument("--snapshot", metavar="PNG", nargs="?", const="fishbot-snapshot.png",
                     help="write the captured frame with the HUD regions outlined, then exit")
     ap.add_argument("--sensitivity", type=float, default=stored["counts_per_pct"],
@@ -207,10 +286,26 @@ def main(argv: Optional[list] = None) -> int:
         print(f"\n{exc}\n", file=sys.stderr)
         return 2
 
+    reporter = Reporter(alert=args.alert)
+    # `--dry-run` keeps the *real* injector, with its foreground guard, but
+    # sends nothing: every call is still checked and journalled, so a dry run
+    # exercises the same code path the live one does.
+    injector = Injector(dry_run=args.dry_run or args.simulate,
+                        require_foreground=not (args.dry_run or args.simulate),
+                        target_hwnd=hwnd)
+
+    # Whatever happened above, the injector and the source must be talking about
+    # the same window: a guard with no handle refuses everything, silently.
+    if not args.simulate and not injector.target_hwnd and hwnd:
+        injector.target_hwnd = hwnd
+
     if args.probe:
         print("\ncurrent HUD readout:")
         _frame_report(source)
         return 0
+
+    if args.selftest:
+        return _selftest(source, injector, reporter)
 
     if args.snapshot:
         frame = source.grab()
@@ -240,13 +335,6 @@ def main(argv: Optional[list] = None) -> int:
         print(f"  toasts     {toasts}")
         return 0
 
-    reporter = Reporter(alert=args.alert)
-    # `--dry-run` keeps the *real* injector, with its foreground guard, but
-    # sends nothing: every call is still checked and journalled, so a dry run
-    # exercises the same code path the live one does.
-    injector = Injector(dry_run=args.dry_run or args.simulate,
-                        require_foreground=not (args.dry_run or args.simulate),
-                        target_hwnd=hwnd)
     config = BotConfig(loop_hz=args.hz, keep=args.keep, max_cycles=args.once,
                        interact_key=args.interact_key)
     controller = FightController(params=BotParams(counts_per_pct=args.sensitivity))

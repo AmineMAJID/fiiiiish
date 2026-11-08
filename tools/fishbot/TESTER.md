@@ -73,6 +73,17 @@ regarde les messages : il doit annoncer `cast #1`, `bite - striking`,
 C'est l'étape qui valide tout sans risque. Si les messages tombent juste, tu peux
 passer à la suite.
 
+## Étape 2 bis — « rien ne se passe, aucune touche » (`--selftest`)
+
+```powershell
+python -m fishbot.run --selftest
+```
+
+Il teste la chaîne complète dans l'ordre où elle se casse : fenêtre trouvée →
+focus → capture → **une** touche réellement envoyée. Chaque ligne dit `ok` ou
+`FAILED`, et la dernière te dit quoi corriger. C'est le premier truc à lancer si
+« il ne fait rien » — et c'est ce que je veux voir en copier-coller.
+
 ## Étape 3 bis — « F9 ne fait rien » (le piège classique)
 
 Tout ce que le bot envoie passe par `SendInput`, et Windows n'envoie ça qu'à la
@@ -151,5 +162,6 @@ python -m tests.test_vision      # la lecture du HUD
 python -m tests.test_fight       # le combat simulé
 python -m tests.test_e2e         # le bot complet contre un faux client
 python -m tests.test_cli         # réglages, snapshot, démarrage
+python -m tests.test_windows     # le programme complet contre un faux Windows
 python -m tests.test_capture     # capture Win32 sur un faux GDI
 ```

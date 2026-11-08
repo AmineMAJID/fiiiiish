@@ -471,6 +471,166 @@ def test_ask_for_numpy() -> None:
     check("refuses to start without numpy", rc == 2, f"rc={rc}")
 
 
+def test_refusal_is_never_silent() -> None:
+    """The report this test answers: "nothing happens, not one key is pressed".
+
+    Two ways that happens, both of which must now be *impossible to miss*:
+
+    1. the injector refuses because it does not believe the game has the focus.
+       The old code spent the sample and said nothing at all, so a false window
+       match looked like a healthy, silent, dead tool.
+    2. the game the tool is looking at is not a game picture at all.
+
+    In both cases the loop must keep reading (so the status line is real) and
+    the reason must be an event - once - not a whisper.
+    """
+    print("\n[a refusal to send input is printed, not swallowed]")
+    from fishbot.bot import FishingBot, BotConfig
+    from fishbot import simhud, winapi
+    from fishbot.vision import Frame
+    from fishbot.winapi import FocusState, Injector
+
+    class _Src:
+        def __init__(self):
+            self.focus = FocusState(state="other")
+            self.now = lambda: 0.0
+
+        def grab(self):
+            img = simhud._blank(640, 360, "sea")
+            return Frame(arr=img, width=640, height=360, timestamp=0.0)
+
+        def to_screen(self, nx, ny):
+            return 100, 100
+
+    class _StubbornUser32:
+        def IsIconic(self, hwnd):
+            return False
+
+        def IsWindow(self, hwnd):
+            return True
+
+        def IsWindowVisible(self, hwnd):
+            return True
+
+        def GetForegroundWindow(self):
+            return 4242            # somebody else entirely
+
+    real = Injector._user32
+    real_windows = winapi.IS_WINDOWS
+    real_loader = winapi._user32
+    stub = _StubbornUser32()
+    winapi._user32 = lambda: stub          # what Injector picks up in __init__
+    Injector._user32 = stub
+    winapi.IS_WINDOWS = True
+    try:
+        events = []
+        inj = Injector(require_foreground=True, target_hwnd=11)
+        bot = FishingBot(source=_Src(), injector=inj,
+                         config=BotConfig(require_cast_gate=False),
+                         notify=lambda lvl, msg: events.append((lvl, msg)),
+                         clock=lambda: 0.0, sleep=lambda s: None)
+        for _ in range(12):
+            bot.step()
+        errors = [m for lvl, m in events if lvl == "error"]
+        check("it says the input is refused", any("input refused" in m for m in errors),
+              f"{errors[:2]}")
+        check("...and names the window that has the focus instead",
+              any("4242" in m for m in errors), f"{errors[:2]}")
+        check("it says it only once, not on every sample",
+              sum(1 for m in errors if "input refused" in m) == 1, f"{len(errors)} events")
+        check("the readings continue instead of freezing",
+              bot.last_frame is not None, "no frame")
+        check("the reason is also in the status diagnosis",
+              "input refused" in bot.diagnose(), bot.diagnose())
+
+        # the gate itself still refuses - the message is what changed
+        check("nothing was actually sent", not inj.history or
+              all(kind != "key_down" for kind, _ in inj.history),
+              f"{[k for k, _ in inj.history][:5]}")
+    finally:
+        Injector._user32 = real
+        winapi._user32 = real_loader
+        winapi.IS_WINDOWS = real_windows
+
+
+def test_window_matching() -> None:
+    """A launcher or a splash screen is not the game."""
+    print("\n[the window the tool picks can actually be the game]")
+    from fishbot import winapi
+
+    class _U32:
+        """Four candidate windows: launcher, console, splash, the game."""
+
+        windows = {
+            1: ("FiveM Launcher", 420, 120),
+            2: ("FiveM Console", 800, 500),
+            3: ("FiveM - splash", 512, 288),
+            4: ("FiveM", 1920, 1080),
+        }
+
+        def IsWindowVisible(self, hwnd):
+            return True
+
+        def IsIconic(self, hwnd):
+            return False
+
+        def GetWindowTextLengthW(self, hwnd):
+            return len(self.windows[int(hwnd)][0]) if int(hwnd) in self.windows else 0
+
+        def GetWindowTextW(self, hwnd, buf, size):
+            name = self.windows[int(hwnd)][0] if int(hwnd) in self.windows else ""
+            buf.value = name
+            return len(name)
+
+        def EnumWindows(self, cb, lparam):
+            for hwnd in self.windows:
+                cb(hwnd, lparam)
+            return 1
+
+    class _Ctypes:
+        """Stand-in for this module's ``ctypes``: WINFUNCTYPE and little else."""
+
+        LPARAM = BOOL = HWND = object
+
+        @staticmethod
+        def WINFUNCTYPE(*args):
+            return lambda fn: fn
+
+        @staticmethod
+        def create_unicode_buffer(size):
+            class _B:
+                value = ""
+            return _B()
+
+    real_u32, real_ctypes = winapi._user32, winapi.ctypes
+    fake = _U32()
+    fake.ctypes = _Ctypes()
+    winapi._user32 = lambda: fake
+    winapi.ctypes = fake.ctypes
+    try:
+        # the four windows above: only the last one is a game picture
+        rects = {1: (0, 0, 420, 120), 2: (0, 0, 800, 500), 3: (0, 0, 512, 288),
+                 4: (0, 0, 1920, 1080)}
+        real_rect = winapi._client_rect
+        winapi._client_rect = lambda hwnd: rects.get(int(hwnd))
+        try:
+            chosen = winapi.find_game_window(("FiveM",))
+        finally:
+            winapi._client_rect = real_rect
+        check("it picks the game, not the launcher or the splash", chosen == 4, f"hwnd={chosen}")
+        # nothing big enough -> say "not found" rather than talking to a launcher
+        rects = {1: (0, 0, 420, 120), 3: (0, 0, 512, 288)}
+        winapi._client_rect = lambda hwnd: rects.get(int(hwnd))
+        try:
+            chosen = winapi.find_game_window(("FiveM",))
+        finally:
+            winapi._client_rect = real_rect
+        check("with no game picture it reports none, not the wrong window",
+              chosen is None, f"hwnd={chosen}")
+    finally:
+        winapi._user32, winapi.ctypes = real_u32, real_ctypes
+
+
 def main() -> int:
     test_win32_layout()
     test_settings_roundtrip()
@@ -480,6 +640,8 @@ def main() -> int:
     test_armed_until_start()
     test_focus()
     test_idle_diagnosis()
+    test_refusal_is_never_silent()
+    test_window_matching()
     test_ask_for_numpy()
     print()
     if failures:
@@ -494,3 +656,5 @@ def main() -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
+
+

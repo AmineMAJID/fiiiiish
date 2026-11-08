@@ -224,13 +224,26 @@ def find_game_window(titles=("FiveM", "Grand Theft Auto V", "GTAV", "CitizenFX")
     user32.EnumWindows(_cb, 0)
     if not found:
         return None
-    # Prefer a window that has a real client area (skips splash/console windows).
-    best = None
-    best_area = 0
+    # A window that only *matches the title* is not the game: FiveM has a
+    # launcher, a console window and a splash screen carrying the same name, and
+    # clicking into any of them looks exactly like "the tool does nothing".
+    # Prefer the biggest picture, and refuse anything that cannot be the game -
+    # an answer of None is far more useful than the wrong window, because the
+    # caller then says "could not find the game" instead of talking to a
+    # launcher.
+    best, best_area = None, 0
     for hwnd, name in found:
+        if not user32.IsWindowVisible(wt.HWND(hwnd)) or user32.IsIconic(wt.HWND(hwnd)):
+            continue
         rect = _client_rect(hwnd)
-        if rect and rect[2] * rect[3] > best_area:
-            best, best_area = hwnd, rect[2] * rect[3]
+        if not rect:
+            continue
+        width, height = rect[2], rect[3]
+        if width < 640 or height < 360:
+            continue                      # a launcher panel, not a game picture
+        area = width * height
+        if area > best_area:
+            best, best_area = hwnd, area
     return best
 
 
@@ -413,8 +426,11 @@ def client_area(hwnd: Optional[int] = None, titles=("FiveM", "Grand Theft Auto V
     if hwnd is None:
         hwnd = find_game_window(titles)
     if not hwnd:
-        raise RuntimeError("could not find the FiveM window - is the game running? "
-                           "Use --window-title in your config if your title differs.")
+        raise RuntimeError(
+            "could not find the game's window - is the game running, and not "
+            "minimised?  Nothing here can press a key without it.  If the game is "
+            "up, its title probably differs: run with --window-title followed by "
+            "part of the window's title (Task Manager shows it).")
     rect = _client_rect(hwnd)
     if not rect:
         raise RuntimeError(f"could not read the client area of window {hwnd}")
@@ -725,6 +741,30 @@ class Injector:
             return False
         fg = self._user32.GetForegroundWindow()
         return int(fg) == int(self.target_hwnd)
+
+    def explain(self) -> str:
+        """Why the next event would be refused - the sentence the log needs.
+
+        Built from the *same* checks as :meth:`foreground_ok`, so it can never
+        claim "fine" while the send is about to raise, or vice versa.
+        """
+        if self.dry_run or not self.require_foreground:
+            return ""
+        if not self.target_hwnd:
+            return ("no game window is targeted - the window was never found, so "
+                    "every event would go to whatever has the focus")
+        if self._user32.IsIconic(wt.HWND(self.target_hwnd)):
+            return "the game window is minimised"
+        fg = int(self._user32.GetForegroundWindow() or 0)
+        if fg == int(self.target_hwnd):
+            return ""
+        if not window_alive(self.target_hwnd):
+            return (f"the window I am following ({self.target_hwnd}) no longer exists - "
+                    "the game restarted?  It is re-found automatically when it does")
+        if self._user32.IsWindowVisible(wt.HWND(self.target_hwnd)) is False:
+            return f"the window I am following ({self.target_hwnd}) is not visible"
+        return (f"the game window {self.target_hwnd} does not have the focus "
+                f"(the foreground window is {fg})")
 
     def ensure_foreground(self, area: Optional["ClientArea"] = None,
                           allow_click: bool = True) -> str:

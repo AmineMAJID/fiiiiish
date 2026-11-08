@@ -183,6 +183,25 @@ The tool only acts on evidence the resource itself publishes:
   icon plate of the same colour, a flat dark panel beside them) and refuses
   everything else in that corner — a red boat, a shark, another script's UI.
 
+## Proving it can drive *your* machine
+
+`--selftest` walks the whole input path once and prints a verdict per step:
+window found, focus, capture, and one key press actually delivered. When a tool
+"does nothing", this is the difference between a guess and an answer:
+
+```
+self-test of the input path
+----------------------------------------
+  window     hwnd=1234 'FiveM' client=1920x1080 at (0,0) monitor=1920x1080 -> borderless
+  focus      console (game=1234, foreground=99, console=99)
+  activate   clicked
+  capture    960x540 brightness 0.41
+  injector   ready to send
+  key        sent one F key (it does nothing in game)
+----------------------------------------
+  RESULT     the tool can drive the game on this machine.
+```
+
 ## Focus: the reason "F9 does nothing"
 
 Windows delivers `SendInput` events to the **focused** window only. The console
@@ -238,6 +257,7 @@ tools/fishbot/
     test_e2e.py     the whole bot against a fake game, through the real vision
     test_cli.py     settings, reporter, snapshot writer, and the program itself
     test_capture.py the capture path over a fake user32/gdi32 (handles, RGB order)
+    test_windows.py the whole program over a fake user32/gdi32: it really presses E
     fakegame.py     that fake game (renders frames, reacts to injected input)
     tune.py         sweep helper for controller parameters
 ```
@@ -250,6 +270,7 @@ python -m tests.test_fight
 python -m tests.test_e2e
 python -m tests.test_cli
 python -m tests.test_capture
+python -m tests.test_windows
 ```
 
 `tests.test_e2e` is the honest one: the bot is given nothing but a rendered frame

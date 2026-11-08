@@ -174,6 +174,15 @@ class BotConfig:
 
     stop_on_fight_stuck: bool = True
 
+    stop_if_unfocused: bool = False
+    """Spend the sample waiting when the injector refuses to send?  Off.
+
+    Off because "the focus is not where I think it is" must never turn into a
+    bot that reads a frozen screen and presses nothing: that is indistinguishable
+    from a broken tool, and it is exactly the report this default answers.  The
+    refusal is printed and the readings continue, so the log says *why* nothing
+    happens instead of showing a silent, healthy-looking loop."""
+
 
 @dataclass
 class BotStatus:
@@ -266,6 +275,7 @@ class FishingBot:
         self._last_gate = None
         self._bad_frames = 0
         self._last_note = ""
+        self._last_error = ""
 
     # ── control ------------------------------------------------------------
     def stop(self) -> None:
@@ -366,12 +376,23 @@ class FishingBot:
         self._frame = frame
         self.check_toasts(frame)
 
-        # Never press a key into a window that is not focused - it would land in
-        # whatever the player *is* looking at.  The runner may fix the focus;
-        # until it does, this sample is spent waiting.
+        # The injector refuses to send input to a window that is not focused -
+        # that guard is the reason a keystroke cannot land in somebody's chat
+        # window, and it is worth keeping.  What is *not* acceptable is going
+        # quiet because of it: if the tool is looking at the wrong window (a
+        # false match on the title, a launcher, a splash screen), "nothing
+        # happens at all" is the one answer that cannot be debugged.  So the
+        # refusal is reported as an event and the loop keeps reading the screen:
+        # the readings are still informative, and the moment the focus comes
+        # back the next press works.
         if not self._can_send():
-            self._last_note = "the game window does not have the focus"
-            return
+            note = self._injector_error()
+            self._last_note = note
+            if note and note != self._last_error:
+                self._last_error = note
+                self._event("error", f"input refused: {note}")
+            if self.config.stop_if_unfocused:
+                return
 
         # Everything else is a reading, and a reading is untrustworthy when the
         # picture is not the game: a black frame, or a shrunk window, turns a
@@ -384,7 +405,18 @@ class FishingBot:
         if handler is None:
             self._go(WAITING)
             return
-        handler(frame)
+        try:
+            handler(frame)
+        except RuntimeError as exc:
+            # The injector refuses to send into an unfocused window, and it is
+            # right to: the event would land in whatever the player is looking
+            # at.  What must not happen is the exception escaping and killing
+            # the loop - that turns "the game lost the focus" into "the program
+            # crashed", which is indistinguishable from a broken tool.
+            # One line about one situation: the guard above already reports
+            # *why* the focus is wrong, once.  Here it only has to stop.
+            self.pause("input refused - the game lost the focus")
+            self._last_note = "the game lost the focus mid-action; click it once"
 
         if self.config.max_cycles and self.status.cycles >= self.config.max_cycles:
             self._event("info", "cycle limit reached")
@@ -651,6 +683,16 @@ class FishingBot:
         self._settle_limit = self.config.post_decision_delay
         self._go(SETTLE, "decided")
 
+    def _injector_error(self) -> str:
+        """Why would the next event be refused?  '' when it would not be."""
+        explain = getattr(self.injector, "explain", None)
+        if callable(explain):
+            try:
+                return str(explain())
+            except Exception as exc:
+                return f"{exc}"
+        return "" if self._can_send() else "the game window does not have the focus"
+
     def _can_send(self) -> bool:
         """Would an event sent right now reach the game?"""
         gate = getattr(self.injector, "foreground_ok", None)
@@ -704,7 +746,8 @@ class FishingBot:
         """
         out = []
         if self._last_note:
-            out.append(("focus", self._last_note))
+            out.append(("focus", f"input refused: {self._last_note}"
+                         if self._last_note else self._last_note))
         if self._pause:
             reason = self.status.paused_reason or "paused"
             out.append(("paused", f"paused ({reason}) - F9 resumes"))

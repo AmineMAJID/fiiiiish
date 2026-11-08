@@ -300,6 +300,60 @@ def _capture_region(area: ClientArea, src_w: int, src_h: int,
         user32.ReleaseDC(area.hwnd, hdc_window)
 
 
+class FakeSource:
+    """A frame source that draws the HUD synthetically instead of capturing.
+
+    ``--simulate`` uses it, so the whole program - capture loop, hotkeys, the
+    reporter, the settings file, the shutdown path - can be exercised on any
+    machine, without Windows and without a game.  The frames it returns are the
+    same arrays the vision tests are built on, so what runs here is the real
+    reader and the real controller; only the pixel source is different.
+    """
+
+    def __init__(self, width: int = 1280, height: int = 720, scale: float = 0.5,
+                 speed: float = 1.0):
+        self.window = (width, height)
+        self.scale = max(0.2, min(1.0, scale))
+        self.speed = max(0.05, speed)
+        self._t0 = None
+
+    # -- the source interface ------------------------------------------------
+    def now(self) -> float:
+        import time
+        return time.time()
+
+    @property
+    def viewport(self) -> Tuple[int, int]:
+        w, h = self.window
+        return max(2, int(round(w * self.scale))), max(2, int(round(h * self.scale)))
+
+    def to_screen(self, nx: float, ny: float) -> Tuple[int, int]:
+        w, h = self.window
+        return int(round(nx * w)), int(round(ny * h))
+
+    def describe(self) -> str:
+        w, h = self.window
+        vw, vh = self.viewport
+        return f"synthetic {w}x{h} window, captured at {vw}x{vh}"
+
+    def refresh(self):
+        return self
+
+    def grab(self):
+        from . import simhud
+        from .vision import Frame
+        import time
+
+        vw, vh = self.viewport
+        # A slowly turning scene: the reader is exercised on every background,
+        # which is a better smoke test than one fixed picture.
+        worlds = ("sea", "night", "bright", "grey")
+        world = worlds[int(time.time() / 3.0) % 4]
+        img = simhud._blank(vw, vh, world)
+        return Frame(arr=img, width=vw, height=vh, timestamp=time.time(),
+                     window_width=self.window[0], window_height=self.window[1])
+
+
 class ScreenSource:
     """A frame source backed by the real game window.
 

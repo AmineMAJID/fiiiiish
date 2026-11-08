@@ -66,9 +66,22 @@ frame — if a box is not where the resource draws that element, that picture sa
 so immediately. `--dry-run` is safe to run while actually fishing: it logs the
 whole loop and sends no input at all.
 
+`--simulate` runs the whole program against a synthetic HUD instead of the game:
+no window is looked for and nothing is pressed. It is the smoke test — if
+`python -m fishbot.run --simulate` starts, reads, casts and shuts down cleanly on
+a machine with no game installed, the plumbing is fine.
+
 Useful flags: `--scale 0.5` (capture size, default half), `--capture bitblt`
 (if the default `printwindow` comes back black), `--window-title "FiveM"`,
 `--once 50` (stop after N fish), `--no-alert` (no beeps).
+
+### What it remembers
+
+The learned sensitivity (`counts_per_pct`) and a fish counter are kept in
+`~/.fishbot/settings.json` (override the folder with `FISHBOT_HOME`). That is the
+same file the flags above default from, so a second session starts already
+calibrated instead of making the blind first swing again. Delete the file to
+start from scratch.
 
 ---
 
@@ -157,6 +170,7 @@ tools/fishbot/
     controller.py   tension bar -> mouse counts (learning, prediction, guard)
     bot.py          the state machine: cast, bite, strike, reel, keep
     winapi.py       window finding, screen capture, SendInput, hotkeys (ctypes)
+    settings.py     the remembered calibration (~/.fishbot/settings.json)
     report.py       console output + the dependency-free PNG writer
     run.py          the program you run
     simhud.py       renders synthetic HUD frames - tests only
@@ -164,6 +178,7 @@ tools/fishbot/
     test_vision.py  every reader against ground truth, 8 resolutions x 4 worlds
     test_fight.py   the controller against the simulated mini-game
     test_e2e.py     the whole bot against a fake game, through the real vision
+    test_cli.py     settings, reporter, snapshot writer, and the program itself
     fakegame.py     that fake game (renders frames, reacts to injected input)
     tune.py         sweep helper for controller parameters
 ```
@@ -174,6 +189,7 @@ Run the suites from `tools/fishbot`:
 python -m tests.test_vision
 python -m tests.test_fight
 python -m tests.test_e2e
+python -m tests.test_cli
 ```
 
 `tests.test_e2e` is the honest one: the bot is given nothing but a rendered frame

@@ -21,6 +21,10 @@ cast at full power -> wait for the bite -> strike -> fight the fish -> KEEP -> r
 
 ---
 
+Premier essai sur ta machine : voir **[TESTER.md](TESTER.md)** — quatre étapes,
+de `--simulate` à `--once 3`, avec quoi faire si la capture est noire ou si les
+zones sont décalées.
+
 ## Install
 
 Windows, Python 3.9+.

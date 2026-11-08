@@ -74,6 +74,8 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--release", dest="keep", action="store_false",
                     help="release every fish instead")
     ap.add_argument("--once", type=int, default=0, help="stop after this many fish")
+    ap.add_argument("--start-now", action="store_true",
+                    help="begin fishing immediately instead of waiting for F9")
     ap.add_argument("--no-alert", dest="alert", action="store_false", default=True,
                     help="no beep when the tool needs you")
     ap.add_argument("--simulate", action="store_true",
@@ -170,8 +172,16 @@ def main(argv: Optional[list] = None) -> int:
                      "Keep the game window focused.\n")
     reporter.say("cast -> wait -> strike -> reel -> keep, forever.  Ctrl-C also works.\n")
 
+    # It starts *armed but idle*, not fishing: the tool has just taken over the
+    # mouse, and the player still has to get back into the game window.  One F9
+    # (which is polled globally, so it works from anywhere) starts the loop.
+    if not (args.start_now or args.simulate or args.dry_run):
+        bot.pause("waiting for F9")
+        reporter.say("\narmed.  Press F9 to start fishing.\n")
+
     black_frames = 0
     warned_fullscreen = False
+    warned_window = False
     last_status = 0.0
     try:
         while not bot.stopped:
@@ -179,14 +189,29 @@ def main(argv: Optional[list] = None) -> int:
                 if name == "stop":
                     bot.stop()
                 elif name == "pause":
-                    bot.pause("user")
-                    reporter("warn", "paused - F9 to resume")
+                    if not bot.paused:
+                        bot.pause("user")
+                        reporter("warn", "paused - F9 to resume")
                 elif name == "start":
                     if bot.paused:
                         bot.resume()
-                        reporter("info", "resumed")
+                        reporter("info", "fishing")
 
             started = time.time()
+            try:
+                source.refresh()
+            except RuntimeError as exc:
+                # The game was minimised, closed, or the window handle moved.
+                # Keep the session alive; the loop resumes when it comes back.
+                if not warned_window:
+                    warned_window = True
+                    reporter("error", f"lost the game window ({exc}); waiting for it")
+                time.sleep(0.5)
+                continue
+            else:
+                if warned_window:
+                    warned_window = False
+                    reporter("info", "game window is back")
             bot.step()
 
             # Exclusive fullscreen is the one mode DWM can refuse to hand over:

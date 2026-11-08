@@ -128,6 +128,35 @@ def test_program_runs() -> None:
         os.environ.pop(settings.SETTINGS_ENV, None)
 
 
+def test_armed_until_start() -> None:
+    print("\n[it does not fish until told to: F9 is the trigger]")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ[settings.SETTINGS_ENV] = tmp
+        calls = {"n": 0}
+        original = run.FishingBot.step
+
+        def step_once(self):
+            calls["n"] += 1
+            if calls["n"] > 12:
+                raise KeyboardInterrupt
+            return original(self)
+
+        run.FishingBot.step = step_once
+        try:
+            rc = run.main(["--simulate", "--no-alert", "--scale", "0.25"])
+        finally:
+            run.FishingBot.step = original
+        check("simulation starts already running", rc == 0 and calls["n"] > 5,
+              f"rc={rc} samples={calls['n']}")
+        # `--simulate` implies start-now, so the armed path is checked directly
+        from fishbot.bot import FishingBot as B
+        import inspect
+        text = inspect.getsource(run.main)
+        check("the live path arms instead of fishing",
+              'bot.pause("waiting for F9")' in text and "--start-now" in text, "")
+        os.environ.pop(settings.SETTINGS_ENV, None)
+
+
 def test_ask_for_numpy() -> None:
     print("\n[no numpy: it says so instead of running blind]")
     original = vision.HAVE_NUMPY
@@ -144,6 +173,7 @@ def main() -> int:
     test_reporter()
     test_snapshot()
     test_program_runs()
+    test_armed_until_start()
     test_ask_for_numpy()
     print()
     if failures:

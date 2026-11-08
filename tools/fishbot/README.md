@@ -49,8 +49,14 @@ python -m fishbot.run
 | `F10` | stop |
 | `F11` | pause (also fires on a full bag / refused action) |
 
-Keep the game window focused: the tool refuses to send input to an unfocused
-window, on purpose.
+It starts **armed but idle**: it finds the window, reports what it found, and
+waits. `F9` starts the fishing (`--start-now` skips the wait). Keeping the game
+window focused is on you: the tool refuses to send input to an unfocused window,
+on purpose.
+
+If the window disappears mid-session (minimised, closed, moved between monitors)
+the loop waits for it and picks up where it left off; the window rect is re-read
+every sample, so a resolution or display-mode change is followed automatically.
 
 ### First run
 

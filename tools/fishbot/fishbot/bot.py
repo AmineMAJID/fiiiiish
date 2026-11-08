@@ -441,7 +441,7 @@ class FishingBot:
                     self._drive(0.0, None, 0.0)
                     return
                 self._event("warn", "no reeling HUD after the strike")
-                self._settle_limit = self.config.settle_timeout
+                self._settle_limit = min(1.5, self.config.settle_timeout)
                 self._go(SETTLE, "strike did not connect")
                 return
             if self._missing_ticks < self.config.fight_lost_ticks:

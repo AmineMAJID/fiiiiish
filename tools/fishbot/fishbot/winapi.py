@@ -356,7 +356,11 @@ class ScreenSource:
                 arr = _capture_region(a, a.width, a.height, w, h, other)
         else:
             self._black_retries = 0
-        return Frame(arr=arr, width=w, height=h, timestamp=time.time())
+        # The HUD is laid out for the *window*, and its rem formula has a
+        # floor, so the frame carries the window size alongside the (possibly
+        # halved) pixels we actually captured.
+        return Frame(arr=arr, width=w, height=h, timestamp=time.time(),
+                     window_width=a.width, window_height=a.height)
 
 
 # ── input injection ─────────────────────────────────────────────────────────

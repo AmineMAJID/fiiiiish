@@ -72,6 +72,20 @@ class BotConfig:
     """A small human-like delay after the bite appears, well inside the 3 s
     window (``FishingConfig.BiteWindow``)."""
 
+    fight_grace: float = 1.2
+    """Seconds at the start of a fight during which an empty HUD is ignored.
+
+    The reel HUD is only *evidence* once it has something to say: for the first
+    frames the tension bar is at zero, progress has not moved, and the game has
+    not picked a side yet, so a reader that answers "no HUD" is telling the
+    truth about a fight that has certainly started.
+    """
+
+    fight_lost_ticks: int = 3
+    """Consecutive empty samples before a *known-running* fight is called over.
+    Three at 20 Hz is 150 ms: long enough not to trip on a dropped frame, short
+    enough that the fish is not re-cast for."""
+
     fight_timeout: float = 75.0
     """A fight that runs longer than this is stuck; abort by re-casting."""
 
@@ -192,6 +206,8 @@ class FishingBot:
         self._idle_ticks = 0
         self._awaiting_fight = False
         self._fight_ticks = 0
+        self._missing_ticks = 0
+        self._fight_seen = False
         self._settle_limit = 0.0
         self._decided_for: Optional[float] = None
 
@@ -402,6 +418,8 @@ class FishingBot:
         self.controller.reset(max_angle=70.0)
         self._awaiting_fight = False
         self._fight_ticks = 0
+        self._missing_ticks = 0
+        self._fight_seen = False
         self._settle_limit = 0.0
         self._go(FIGHT, "reeling")
         self._last_reading = reading
@@ -410,6 +428,24 @@ class FishingBot:
     def _on_fight(self, frame) -> None:
         reading = vision.read_fight(frame)
         if not reading.present:
+            # An empty screen is not evidence that a fight *ended* - it is the
+            # normal state of a fight that has just *started*: the tension bar
+            # is at zero, the reel has not moved and the game has not picked a
+            # side yet.  Only the loss of a HUD we had already seen means over.
+            self._missing_ticks += 1
+            if not self._fight_seen:
+                if self._elapsed() < self.config.fight_grace:
+                    # Nothing to read yet, but the fish is on: nudge the camera
+                    # so the fight has something to show.  This is what turns an
+                    # unreadable first frame into the very next readable one.
+                    self._drive(0.0, None, 0.0)
+                    return
+                self._event("warn", "no reeling HUD after the strike")
+                self._settle_limit = self.config.settle_timeout
+                self._go(SETTLE, "strike did not connect")
+                return
+            if self._missing_ticks < self.config.fight_lost_ticks:
+                return
             won = self._last_reading is not None and self._last_reading.progress > 0.97
             if won:
                 self.status.fights_won += 1
@@ -420,6 +456,8 @@ class FishingBot:
             self._settle_limit = self.config.settle_timeout
             self._go(SETTLE)
             return
+        self._missing_ticks = 0
+        self._fight_seen = True
         if self._elapsed() > self.config.fight_timeout:
             self.status.fights_lost += 1
             self._event("error", "fight timed out - aborting the cast")
@@ -428,15 +466,18 @@ class FishingBot:
                 self.stop()
             return
 
-        decision = self.controller.tick(tension=reading.tension, side=reading.side,
-                                        progress=reading.progress)
-        if decision.counts:
-            try:
-                self.injector.move_relative(decision.counts, 0)
-            except RuntimeError as exc:
-                self.pause(f"input refused: {exc}")
-                return
+        self._drive(reading.tension, reading.side, reading.progress)
         self._last_reading = reading
+
+    def _drive(self, tension: float, side, progress: float) -> None:
+        """One controller sample -> one relative mouse move."""
+        decision = self.controller.tick(tension=tension, side=side, progress=progress)
+        if not decision.counts:
+            return
+        try:
+            self.injector.move_relative(decision.counts, 0)
+        except RuntimeError as exc:
+            self.pause(f"input refused: {exc}")
 
     def _on_settle(self, frame) -> None:
         """Between the strike and the catch modal.
@@ -446,9 +487,11 @@ class FishingBot:
         showcase camera plays and the catch modal appears
         (``StartCatchShowcase`` + ``OpenCatchDecisionModal``).
         """
-        if self._awaiting_fight and vision.read_fight(frame).present:
-            self._enter_fight(vision.read_fight(frame))
-            return
+        if self._awaiting_fight:
+            reading = vision.read_fight(frame)
+            if reading.present:
+                self._enter_fight(reading)
+                return
         modal = vision.read_catch_modal(frame)
         if modal.present:
             self._decided_for = None

@@ -145,7 +145,8 @@ class FakeGame:
     def grab(self):
         from fishbot.vision import Frame
         img = self.render()
-        return Frame(arr=img, width=self.vw, height=self.vh, timestamp=self.time)
+        return Frame(arr=img, width=self.vw, height=self.vh, timestamp=self.time,
+                     window_width=self.w, window_height=self.h)
 
     # ── rendering ───────────────────────────────────────────────────────────
     def render(self):
@@ -153,27 +154,31 @@ class FakeGame:
             # the meter is only drawn while the button is held
             cycle = ((self.time - self.charge_start) % 2.2) / 1.1
             shown = cycle if cycle <= 1.0 else 2.0 - cycle
-            img = simhud.render_cast(self.vw, self.vh, shown, self.world)
+            img = simhud.render_cast(self.vw, self.vh, shown, self.world, fit=(self.w, self.h))
         elif self.state == FIGHT and self.fight is not None:
             danger = min(1.0, abs(self.camera_offset) / self.fight.max_angle)
             img = simhud.render_fight(self.vw, self.vh, danger, self.fight.progress,
-                                      self.fight.target_side, self.world)
+                                      self.fight.target_side, self.world,
+                                      fit=(self.w, self.h))
         elif self.state == CHARGING:
-            img = simhud.render_cast(self.vw, self.vh, self.power, self.world)
+            img = simhud.render_cast(self.vw, self.vh, self.power, self.world, fit=(self.w, self.h))
         elif self.state == BITING:
             left = max(0.0, (self.window_ends - self.time) / self.window_seconds)
-            img = simhud.render_bite(self.vw, self.vh, left, self.world, buoys=True)
+            img = simhud.render_bite(self.vw, self.vh, left, self.world, buoys=True,
+                                      fit=(self.w, self.h))
         elif self.state == WAITING:
-            img = simhud.render_bite(self.vw, self.vh, 0.0, self.world, buoys=True)
+            img = simhud.render_bite(self.vw, self.vh, 0.0, self.world, buoys=True,
+                                      fit=(self.w, self.h))
         elif self.state == MODAL:
-            img = simhud.render_catch_modal(self.vw, self.vh, self.world)
+            img = simhud.render_catch_modal(self.vw, self.vh, self.world, fit=(self.w, self.h))
         else:
             img = simhud._blank(self.vw, self.vh, self.world)
         if self.toast_error:
-            toast = simhud.render_error_toast(self.vw, self.vh, self.world)
+            toast = simhud.render_error_toast(self.vw, self.vh, self.world,
+                                              fit=(self.w, self.h))
             # composite only the toast area
             from fishbot.geometry import notify_layout
-            box = notify_layout(self.vw, self.vh)["boxes"][0]
+            box = notify_layout(self.w, self.h)["boxes"][0]
             x1, y1, w, h = box.to_px(self.vw, self.vh)
             img[y1:y1 + h, x1:x1 + w] = toast[y1:y1 + h, x1:x1 + w]
         return img

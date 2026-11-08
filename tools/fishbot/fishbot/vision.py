@@ -90,12 +90,35 @@ def color_score(arr, rgb: Sequence[float], tol: float = 0.32) -> "np.ndarray":
 # ── the frame ────────────────────────────────────────────────────────────────
 @dataclass
 class Frame:
-    """One captured frame, RGB, plus the geometry it was captured with."""
+    """One captured frame, RGB, plus the geometry it was captured with.
+
+    ``width``/``height`` are the *capture* size and ``arr`` is indexed with
+    them.  The HUD regions, however, are derived from ``window_width`` /
+    ``window_height`` - the size of the game window itself - because the
+    stylesheet sizes everything in ``rem``, and ``rem`` is clamped to a minimum
+    of 8 px.  Capturing at half resolution therefore does not simply halve the
+    fractions: below roughly 960x540 the clamp bites and the HUD takes up a
+    slightly larger share of the picture.  Deriving the regions from the window
+    keeps them exact at any capture scale.
+    """
 
     arr: "np.ndarray"
     width: int
     height: int
     timestamp: float
+    window_width: Optional[int] = None
+    window_height: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.window_width is None:
+            self.window_width = self.width
+        if self.window_height is None:
+            self.window_height = self.height
+
+    @property
+    def viewport(self) -> Tuple[int, int]:
+        """The window size the HUD was laid out for."""
+        return int(self.window_width or self.width), int(self.window_height or self.height)
 
     def crop(self, r: Rect):
         left, top, w, h = r.to_px(self.width, self.height)
@@ -288,8 +311,37 @@ class FightReading:
                 f"progress={self.progress:.2f} side={self.side}")
 
 
+def panel_presence(frame: Frame, layout: FightLayout) -> float:
+    """How much the reel *card* looks like a card, 0..1.
+
+    The bars alone cannot answer "is the mini-game on screen?" in its first
+    frames: the tension bar is at zero, the reel has not moved and the game has
+    not picked a side yet, so every fill-based signal is legitimately silent
+    while the fight is already running.  The card itself is the evidence, and it
+    is a *flat, opaque plate* of a known brightness over the world.
+    """
+    inner = frame.crop(layout.panel.inset(0.03, 0.12))
+    if inner.size == 0:
+        return 0.0
+    v = value(inner)
+    mean = float(v.mean())
+    if not (0.13 <= mean <= 0.32):
+        return 0.0
+    if float(v.std()) > 0.09:
+        return 0.0
+    ring = frame.crop(layout.hud.grow(0.10, 0.8))
+    if ring.size == 0:
+        return 0.0
+    ring_v = value(ring)
+    # A scene that happens to match the card's brightness is still a scene: it
+    # is textured, or it is a smooth gradient the card interrupts with an edge.
+    if abs(float(ring_v.mean()) - mean) < 0.02 and float(ring_v.std()) < 0.05:
+        return 0.0
+    return 1.0
+
+
 def read_fight(frame: Frame, layout: Optional[FightLayout] = None) -> FightReading:
-    layout = layout or fight_layout(frame.width, frame.height)
+    layout = layout or fight_layout(*frame.viewport)
 
     tension_roi = frame.crop(layout.tension_track.grow(0.0, 0.6))
     progress_roi = frame.crop(layout.progress_track.grow(0.0, 0.6))
@@ -315,11 +367,13 @@ def read_fight(frame: Frame, layout: Optional[FightLayout] = None) -> FightReadi
             side = "right"
             cue_strength = min(1.0, right_hot / 0.05)
 
-    # The panel is ~0.5rem of track on a very dark card; the tracks read as the
-    # two lightest horizontal stripes in the box.  Contrast therefore doubles as
-    # the "is the reel HUD on screen" signal, with the coloured fill as backup.
-    present = contrast > 0.012 or tension > 0.02 or progress > 0.02 or side is not None
-    conf = max(min(1.0, contrast / 0.03), cue_strength, min(1.0, tension * 3))
+    # `contrast` is the two lightest stripes in the box: the meter tracks.  It is
+    # the cheapest "the reel HUD is on screen" signal, but on its own it is
+    # silent during a fight's first frames, so the card itself is checked too.
+    card = panel_presence(frame, layout)
+    present = (contrast > 0.012 or tension > 0.02 or progress > 0.02
+               or side is not None or card > 0.5)
+    conf = max(min(1.0, contrast / 0.03), cue_strength, min(1.0, tension * 3), card)
     return FightReading(present=present, tension=tension, progress=progress,
                         side=side, confidence=conf)
 
@@ -335,13 +389,20 @@ class BiteReading:
 
 
 def read_bite(frame: Frame) -> BiteReading:
-    lay = bite_layout(frame.width, frame.height)
+    lay = bite_layout(*frame.viewport)
     ring_roi = frame.crop(lay["ring"])
     ring = ring_coverage(ring_roi)
     float_roi = frame.crop(lay["float"])
-    coloured = saturated_fraction(float_roi, sat_min=0.35, val_min=0.30)
+    # The bobber is painted near-white, so it is the one thing in this region
+    # that is bright *and* unsaturated.  Testing for "colourful" instead fires
+    # on the sea itself, which is exactly what the water behind it looks like.
+    buoy = 0.0
+    if float_roi.size:
+        v = value(float_roi)
+        sat = saturation(float_roi)
+        buoy = float(((v > 0.75) & (sat < 0.25)).mean())
     biting = ring > 0.05
-    present = biting or coloured > 0.004
+    present = biting or buoy > 0.004
     return BiteReading(present=present, biting=biting, remaining=ring)
 
 
@@ -356,7 +417,7 @@ class CastReading:
 
 
 def read_cast(frame: Frame) -> CastReading:
-    lay = cast_layout(frame.width, frame.height)
+    lay = cast_layout(*frame.viewport)
     track_roi = frame.crop(lay["track"])
     power = vertical_fill(track_roi, sat_min=0.20, coverage=0.28)
     # The card's tick gutter (0, 25, 50, 75, 100) is text, so "the card is up"
@@ -395,7 +456,7 @@ CHOICE_DARK_MAX = 0.95
 
 
 def read_catch_modal(frame: Frame) -> CatchReading:
-    lay = catch_modal_layout(frame.width, frame.height)
+    lay = catch_modal_layout(*frame.viewport)
     choices = frame.crop(lay["choices"])
     if choices.size == 0:
         return CatchReading(False)
@@ -416,7 +477,7 @@ def read_catch_modal(frame: Frame) -> CatchReading:
 
 def read_error_toast(frame: Frame) -> bool:
     """True when a red (error) toast is showing in the notification stack."""
-    lay = notify_layout(frame.width, frame.height)
+    lay = notify_layout(*frame.viewport)
     for box in lay["boxes"]:  # type: ignore[index]
         roi = frame.crop(box)
         if roi.size == 0:
@@ -429,7 +490,7 @@ def read_error_toast(frame: Frame) -> bool:
 
 def read_depth_card(frame: Frame) -> float:
     """0..1 confidence that the bottom-right depth/action card is on screen."""
-    lay = depth_layout(frame.width, frame.height)
+    lay = depth_layout(*frame.viewport)
     roi = frame.crop(lay["card"])
     if roi.size == 0:
         return 0.0

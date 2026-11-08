@@ -8,6 +8,12 @@ value, and then assert the vision functions recover those numbers.
 
 It is **test and development code only** - ``fishbot.run`` never imports it, so
 none of it needs to run without numpy.
+
+Each renderer takes the *canvas* size (how many pixels to draw) and, optionally,
+``fit`` - the size of the game window the HUD was laid out for.  The two differ
+when a test captures at half resolution: the stylesheet's ``rem`` has a pixel
+floor, so half-resolution capture is not a pure rescale of the HUD boxes, and
+the layout has to follow the window while the pixels follow the canvas.
 """
 
 from __future__ import annotations
@@ -55,6 +61,11 @@ def _blank(fw: int, fh: int, world: str = "sea") -> "np.ndarray":
     return img
 
 
+def _fit(fw: int, fh: int, fit: Optional[Tuple[int, int]]) -> Tuple[int, int]:
+    """Layout reference size: the window, when the canvas is a scaled capture."""
+    return (fit[0], fit[1]) if fit else (fw, fh)
+
+
 def _fill(img, r, color) -> None:
     h, w = img.shape[:2]
     x1, y1 = int(r.x * w), int(r.y * h)
@@ -89,17 +100,24 @@ def _round_panel(img, r, c1=PANEL, c2=PANEL_2, border=(51, 65, 85)) -> None:
     block = (np.array(c1, dtype=np.float32) * (1 - grad)
              + np.array(c2, dtype=np.float32) * grad).astype(np.uint8)
     img[y1:y2, x1:x2] = block
-    # 0.0625rem border, brighter on the top edge like the real card
-    img[y1:y1 + max(1, (y2 - y1) // 40), x1:x2] = (59, 130, 246)
+    # The real card has a 0.0625rem border in a translucent slate; at half
+    # capture resolution of a 720p window that border is barely one pixel, so it
+    # is drawn *only* when there is room for it.  A bright every-other-card
+    # outline was enough to make the band detectors fire on an otherwise plain
+    # scene at small sizes, which is a rendering artefact, not HUD behaviour.
+    edge = max(1, (y2 - y1) // 40)
+    if edge < 2:
+        return
+    img[y1:y1 + edge, x1:x2] = (59, 130, 246)
 
 
 def render_fight(fw: int, fh: int, tension: float, progress: float,
                  side: Optional[str], world: str = "sea", dim: float = 1.0,
-                 ring: Optional[float] = None) -> "np.ndarray":
+                 ring: Optional[float] = None,
+                 fit: Optional[Tuple[int, int]] = None) -> "np.ndarray":
     """Draw the reel mini-game as the NUI would, with known values."""
     img = _blank(fw, fh, world)
-    lay = fight_layout(fw, fh)
-    u = rem(fw, fh)
+    lay = fight_layout(*_fit(fw, fh, fit))
 
     _round_panel(img, lay.hud.union(lay.panel) if lay.hud.y < lay.panel.y else lay.panel)
 
@@ -131,7 +149,7 @@ def render_fight(fw: int, fh: int, tension: float, progress: float,
     bar(lay.tension_track, tension, colour)
 
     if ring is not None:
-        _draw_ring(img, fw, fh, ring)
+        _draw_ring(img, *_fit(fw, fh, fit), ring)
     if dim < 1.0:
         img = (img.astype(np.float32) * dim).astype(np.uint8)
     return img
@@ -170,20 +188,22 @@ def _draw_ring(img, fw: int, fh: int, remaining: float) -> None:
 
 
 def render_bite(fw: int, fh: int, remaining: float, world: str = "sea",
-                buoys: bool = True) -> "np.ndarray":
+                buoys: bool = True,
+                fit: Optional[Tuple[int, int]] = None) -> "np.ndarray":
     img = _blank(fw, fh, world)
+    lw, lh = _fit(fw, fh, fit)
     if buoys:
-        lay = bite_layout(fw, fh)
+        lay = bite_layout(lw, lh)
         _disc(img, lay["float"], 0.30, (26, 74, 108))   # the soft radial glow
         _disc(img, lay["float"], 0.20, (240, 240, 245))  # the buoy
-    _draw_ring(img, fw, fh, remaining)
+    _draw_ring(img, lw, lh, remaining)
     return img
 
 
-def render_cast(fw: int, fh: int, power: float, world: str = "sea") -> "np.ndarray":
+def render_cast(fw: int, fh: int, power: float, world: str = "sea",
+                fit: Optional[Tuple[int, int]] = None) -> "np.ndarray":
     img = _blank(fw, fh, world)
-    lay = cast_layout(fw, fh)
-    u = rem(fw, fh)
+    lay = cast_layout(*_fit(fw, fh, fit))
     _round_panel(img, lay["card"])
     # the tick gutter and the labels are text, drawn as dim blocks
     track = lay["track"]
@@ -202,9 +222,10 @@ def render_cast(fw: int, fh: int, power: float, world: str = "sea") -> "np.ndarr
     return img
 
 
-def render_catch_modal(fw: int, fh: int, world: str = "sea") -> "np.ndarray":
+def render_catch_modal(fw: int, fh: int, world: str = "sea",
+                       fit: Optional[Tuple[int, int]] = None) -> "np.ndarray":
     img = _blank(fw, fh, world)
-    lay = catch_modal_layout(fw, fh)
+    lay = catch_modal_layout(*_fit(fw, fh, fit))
     _round_panel(img, lay["modal"], c1=(15, 23, 43), c2=(29, 41, 61))
     for key in ("keep", "release"):
         _fill(img, lay[key], (29, 41, 61))
@@ -219,9 +240,10 @@ def render_catch_modal(fw: int, fh: int, world: str = "sea") -> "np.ndarray":
     return img
 
 
-def render_error_toast(fw: int, fh: int, world: str = "sea") -> "np.ndarray":
+def render_error_toast(fw: int, fh: int, world: str = "sea",
+                       fit: Optional[Tuple[int, int]] = None) -> "np.ndarray":
     img = _blank(fw, fh, world)
-    lay = notify_layout(fw, fh)
+    lay = notify_layout(*_fit(fw, fh, fit))
     box = lay["boxes"][0]  # type: ignore[index]
     _round_panel(img, box, c1=(15, 23, 43), c2=(29, 41, 61))
     _fill(img, type(box)(box.x, box.y, box.w, box.h * 0.05), RED)

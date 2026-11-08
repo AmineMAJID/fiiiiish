@@ -39,8 +39,13 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         failures.append(f"{name} {detail}")
 
 
-def frame(img, fw, fh):
-    return vision.Frame(arr=img, width=fw, height=fh, timestamp=0.0)
+def frame(img, fw, fh, fit=None):
+    """Wrap a rendered array.  ``fw``/``fh`` are the canvas, ``fit`` the window
+    the HUD was laid out for (they differ for a scaled capture)."""
+    kw = {}
+    if fit:
+        kw = {"window_width": fit[0], "window_height": fit[1]}
+    return vision.Frame(arr=img, width=fw, height=fh, timestamp=0.0, **kw)
 
 
 def test_tension() -> None:
@@ -119,6 +124,42 @@ def test_cast_power() -> None:
                   f"got {got.power:.3f} present={got.present}")
 
 
+def test_plain_frames_are_empty() -> None:
+    print("\n[nothing on screen is not mistaken for something]")
+    for fw, fh in RESOLUTIONS:
+        for world in WORLDS:
+            plain = frame(simhud._blank(fw, fh, world), fw, fh)
+            checks = (("reel", vision.read_fight(plain).present),
+                      ("bite", vision.read_bite(plain).present),
+                      ("cast", vision.read_cast(plain).present),
+                      ("catch", vision.read_catch_modal(plain).present),
+                      ("toast", vision.read_error_toast(plain)))
+            for name, seen in checks:
+                check(f"no {name} HUD on a plain {world} frame at {fw}x{fh}", not seen)
+
+
+def test_scaled_capture() -> None:
+    print("\n[halved capture of the same window reads the same numbers]")
+    for fw, fh in ((1280, 720), (1920, 1080), (2560, 1440)):
+        cw, ch = fw // 2, fh // 2
+        for world in ("sea", "night"):
+            img = simhud.render_fight(cw, ch, 0.62, 0.81, "left", world, fit=(fw, fh))
+            got = vision.read_fight(frame(img, cw, ch, fit=(fw, fh)))
+            check(f"tension survives halving at {fw}x{fh} ({world})",
+                  abs(got.tension - 0.62) < 0.02, f"{got.tension:.3f}")
+            check(f"progress survives halving at {fw}x{fh} ({world})",
+                  abs(got.progress - 0.81) < 0.02, f"{got.progress:.3f}")
+            check(f"cue survives halving at {fw}x{fh} ({world})", got.side == "left", got.side)
+            modal = simhud.render_catch_modal(cw, ch, world, fit=(fw, fh))
+            got_m = vision.read_catch_modal(frame(modal, cw, ch, fit=(fw, fh)))
+            check(f"catch card survives halving at {fw}x{fh} ({world})", got_m.present)
+            if got_m.keep_rect:
+                box = got_m.keep_rect
+                check(f"the KEEP button is still on the card at {fw}x{fh}",
+                      0.5 < box.cx < 0.95 and 0.3 < box.cy < 0.9,
+                      f"({box.cx:.2f},{box.cy:.2f})")
+
+
 def test_catch_modal() -> None:
     print("\n[KEEP / RELEASE modal]")
     for fw, fh in ((1920, 1080), (2560, 1440), (1280, 720), (3440, 1440)):
@@ -176,6 +217,8 @@ def main() -> int:
     test_presence()
     test_bite_ring()
     test_cast_power()
+    test_plain_frames_are_empty()
+    test_scaled_capture()
     test_catch_modal()
     test_error_toast()
     print()

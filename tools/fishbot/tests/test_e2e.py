@@ -47,7 +47,6 @@ class Loop:
         self.bot = FishingBot(source=game, injector=self.injector, config=self.config,
                               controller=FightController(params=bot_params or BotParams()),
                               sleep=game.advance)
-        self.bot.status.started_at = 0.0
         self.events: List[str] = []
 
     def run(self, seconds: float, until=None) -> None:
@@ -205,6 +204,26 @@ def test_no_click_during_fight() -> None:
     check("the fight state was exercised", FIGHT in states_seen, f"{sorted(states_seen)}")
 
 
+def test_status_downlink() -> None:
+    print("\n[the numbers the player reads are the numbers that happened]")
+    game = FakeGame(seed=5)
+    loop = Loop(game)
+    loop.run_until_fish(seconds=240, target=3)
+    st = loop.bot.status
+    check("kept count equals catches", st.fish_kept == len(game.decisions) == 3,
+          f"kept={st.fish_kept} decisions={len(game.decisions)}")
+    check("cast count equals the game's casts", st.casts == game.casts,
+          f"casts={st.casts}/{game.casts}")
+    check("fights won equals fish landed", st.fights_won == game.landed,
+          f"won={st.fights_won} landed={game.landed}")
+    check("no fight was reported lost", st.fights_lost == 0, f"{st.fights_lost}")
+    check("uptime follows the game's clock", abs(st.uptime - game.time) < 1.0,
+          f"uptime={st.uptime:.1f} game={game.time:.1f}")
+    line = st.summary()
+    check("the summary line is populated", "casts=3" in line and "landed=3" in line, line)
+    print("     " + line)
+
+
 def test_cast_gate() -> None:
     print("\n[the game decides: no cast while its prompt is grey]")
     game = FakeGame(seed=41)
@@ -263,6 +282,7 @@ def main() -> int:
     test_cast_card_blocks_second_cast()
     test_no_click_during_fight()
     test_cast_gate()
+    test_status_downlink()
     test_mixed_conditions()
     print()
     if failures:

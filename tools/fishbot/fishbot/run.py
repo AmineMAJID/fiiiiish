@@ -51,6 +51,7 @@ def _frame_report(source) -> None:
     frame = source.grab()
     print(f"  frame      {frame.width}x{frame.height}  brightness {frame.mean_brightness():.2f}")
     print(f"  cast card  {vision.read_cast(frame)}")
+    print(f"  cast gate  {vision.read_cast_gate(frame)}")
     print(f"  bite       {vision.read_bite(frame)}")
     print(f"  reel       {vision.read_fight(frame)}")
     print(f"  catch      {vision.read_catch_modal(frame)}")
@@ -74,6 +75,8 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--release", dest="keep", action="store_false",
                     help="release every fish instead")
     ap.add_argument("--once", type=int, default=0, help="stop after this many fish")
+    ap.add_argument("--interact-key", default="e",
+                    help="the resource's interaction key, if your server rebinds it")
     ap.add_argument("--start-now", action="store_true",
                     help="begin fishing immediately instead of waiting for F9")
     ap.add_argument("--no-alert", dest="alert", action="store_false", default=True,
@@ -156,7 +159,8 @@ def main(argv: Optional[list] = None) -> int:
     injector = Injector(dry_run=args.dry_run or args.simulate,
                         require_foreground=not (args.dry_run or args.simulate),
                         target_hwnd=hwnd)
-    config = BotConfig(loop_hz=args.hz, keep=args.keep, max_cycles=args.once)
+    config = BotConfig(loop_hz=args.hz, keep=args.keep, max_cycles=args.once,
+                       interact_key=args.interact_key)
     controller = FightController(params=BotParams(counts_per_pct=args.sensitivity))
     bot = FishingBot(source=source, injector=injector, config=config,
                      controller=controller, notify=reporter)

@@ -51,6 +51,10 @@ class BotConfig:
     """Samples per second.  The HUD itself only publishes every 50 ms, so
     anything above ~20 Hz is wasted CPU with no extra information."""
 
+    interact_key: str = "e"
+    """The key the resource listens for (``Config.Keys.InteractKey``, control 38:
+    E by default).  Change it if your server rebinds the interaction key."""
+
     equip_delay: float = 0.12
     """Pause between pressing E and starting to charge, so the resource's charge
     animation (and its ``BeginCast`` event) has started before the button goes
@@ -172,10 +176,14 @@ class BotStatus:
     last_event: str = ""
     last_note: str = ""
     paused_reason: str = ""
+    now: Optional[Callable[[], float]] = None
+    """The clock to measure uptime with; the bot points this at its own, so a
+    simulated session reports simulated seconds."""
 
     @property
     def uptime(self) -> float:
-        return max(0.0, time.time() - self.started_at) if self.started_at else 0.0
+        clock = self.now or time.time
+        return max(0.0, clock() - self.started_at)
 
     def summary(self) -> str:
         fish = self.fish_kept + self.fish_released
@@ -220,7 +228,9 @@ class FishingBot:
         self.sleep: Callable[[float], None] = sleep or time.sleep
 
         self.status = BotStatus()
-        self._state_since = 0.0
+        self.status.now = self.clock          # uptime is measured on our clock
+        self.status.started_at = self.clock()
+        self._state_since = self.clock()
         self._stop = False
         self._pause = False
         self._state = WAITING
@@ -428,7 +438,7 @@ class FishingBot:
         the moment the charge lasted longer than the tap.
         """
         cfg = self.config
-        self.injector.key_down("e")
+        self.injector.key_down(cfg.interact_key)
         self.status.casts += 1
         try:
             self._sleep(cfg.equip_delay)  # let the script arm the charge
@@ -436,7 +446,7 @@ class FishingBot:
             self._sleep(cfg.cast_hold)    # the meter is only live while held
             self.injector.mouse_up("left")
         finally:
-            self.injector.key_up("e")
+            self.injector.key_up(cfg.interact_key)
         self._go(BITE_WAIT, "cast sent")
         self._event("info", f"cast #{self.status.casts}")
 
@@ -467,7 +477,7 @@ class FishingBot:
             self._event("warn", "strike window missed")
             return
         self._sleep(self.config.strike_delay)
-        self.injector.key("e")
+        self.injector.key(self.config.interact_key)
         # The frame in hand was captured *before* the strike, so it cannot show
         # the reel HUD yet: hand over to SETTLE, which waits for that HUD (or
         # for the catch modal, if the fish was landed in one pull).

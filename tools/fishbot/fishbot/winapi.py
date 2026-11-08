@@ -336,6 +336,10 @@ class FakeSource:
         vw, vh = self.viewport
         return f"synthetic {w}x{h} window, captured at {vw}x{vh}"
 
+    def now(self) -> float:
+        import time
+        return time.time()
+
     def refresh(self):
         return self
 
@@ -359,8 +363,9 @@ class ScreenSource:
 
     ``scale`` shrinks the capture before analysis: the HUD is drawn in rem, so
     half resolution still resolves every bar and saves a lot of CPU.  The
-    geometry is always computed from the *scaled* size, which keeps the tool
-    resolution independent.
+    geometry is *not* derived from the scaled size - ``rem`` has a pixel floor,
+    so a halved capture is not a pure rescale of the HUD; every frame carries
+    the window size it came from and the regions follow that.
     """
 
     def __init__(self, scale: float = 0.5, method: str = "printwindow", hwnd: Optional[int] = None,
@@ -391,6 +396,16 @@ class ScreenSource:
         """Normalised frame coordinate -> absolute screen pixel."""
         a = self.area
         return int(round(a.left + nx * a.width)), int(round(a.top + ny * a.height))
+
+    def now(self) -> float:
+        """The bot times everything against the capture, not the wall clock."""
+        import time
+        return time.time()
+
+    def describe(self) -> str:
+        a = self.area
+        vw, vh = self.viewport
+        return f"{a.describe()} captured at {vw}x{vh} via {self.method}"
 
     # -- frames -------------------------------------------------------------
     def grab(self):

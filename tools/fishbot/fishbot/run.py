@@ -32,7 +32,7 @@ import time
 from typing import Optional
 
 from . import settings, vision
-from .bot import FishingBot, BotConfig
+from .bot import WAITING, BotConfig, FishingBot
 from .controller import BotParams, FightController
 from .geometry import all_regions, notify_layout
 
@@ -43,10 +43,76 @@ from .report import Reporter, outline, pace, write_png
 
 try:
     from .winapi import (FakeSource, HotkeyWatcher, Injector, ScreenSource,
-                         client_area, set_dpi_awareness)
+                         activate_window, client_area, foreground_window,
+                         is_foreground, own_console_window, set_dpi_awareness,
+                         window_alive)
 except Exception as exc:  # pragma: no cover - only on non-Windows
     print(f"fishbot needs Windows: {exc}", file=sys.stderr)
     raise SystemExit(2)
+
+
+
+# ── focus: the difference between "nothing happens" and "it is fishing" ─────
+def _game_hwnd(source) -> int:
+    """The window handle the source is following, if it has one."""
+    if isinstance(source, FakeSource):
+        return 0
+    try:
+        return int(source.area.hwnd)            # ScreenSource
+    except Exception:
+        return 0
+
+
+def _focus_advice(source, args, reporter, injector, allow_click: bool = True) -> str:
+    """After F9: make sure the game will actually receive the keys.
+
+    Every event this tool sends goes nowhere unless the game is the *focused*
+    window, and on Windows the console that ran the script is the focused window
+    - which is why the first F9 appears to do nothing at all.  Rather than a
+    silent stall the tool takes the focus back, in the least invasive way that
+    works: ``SetForegroundWindow`` first, and if Windows refuses that (it
+    usually does, for a background process) one click on an empty piece of the
+    game screen - which is exactly what the player would do, and which the
+    injector only allows when the pointer is the tool's own to move.
+    """
+    if isinstance(source, FakeSource) or args.dry_run:
+        return ""
+    hwnd = _game_hwnd(source)
+    if not hwnd or not window_alive(hwnd):
+        return ""
+    try:
+        area = source.area
+    except Exception:
+        area = None
+    how = injector.ensure_foreground(area, allow_click=allow_click and args.grab_focus)
+    if how == "game":
+        return "the game has the focus"
+    if how == "activated":
+        return "took the focus back to the game"
+    if how == "clicked":
+        return "focused the game with one click in an empty corner"
+    name = ""
+    try:
+        name = source.area.title
+    except Exception:
+        pass
+    return (f"the game window is NOT focused, so it will not receive any key - "
+            f"click it once (or Alt-Tab to {name or 'the game'}), then F9")
+
+
+def note_paused(source, args, reporter, bot) -> bool:
+    """Say, once, how to get from "armed" to "fishing" on this machine."""
+    if isinstance(source, FakeSource) or args.dry_run:
+        return False
+    hwnd = _game_hwnd(source)
+    if not hwnd:
+        return False
+    if is_foreground(hwnd):
+        reporter("info", "the game window has the focus - F9 starts fishing")
+    elif bot.status.paused_reason.startswith("waiting for F9"):
+        reporter("info", "waiting: click into the game window, then press F9 "
+                         "(the game only receives keys while it is focused)")
+    return True
 
 
 # ── the loop ────────────────────────────────────────────────────────────────
@@ -85,6 +151,12 @@ def main(argv: Optional[list] = None) -> int:
                     help="begin fishing immediately instead of waiting for F9")
     ap.add_argument("--no-alert", dest="alert", action="store_false", default=True,
                     help="no beep when the tool needs you")
+    ap.add_argument("--grab-focus", dest="grab_focus", action="store_true",
+                    default=True,
+                    help="take the game's focus back when the tool stops, so the "
+                         "next key press is not eaten by the console (default)")
+    ap.add_argument("--no-grab-focus", dest="grab_focus", action="store_false",
+                    help="never touch focus at all")
     ap.add_argument("--simulate", action="store_true",
                     help="use a synthetic HUD instead of the game window (smoke test)")
     ap.add_argument("--dry-run", action="store_true",
@@ -197,8 +269,14 @@ def main(argv: Optional[list] = None) -> int:
     # (which is polled globally, so it works from anywhere) starts the loop.
     if not (args.start_now or args.simulate or args.dry_run):
         bot.pause("waiting for F9")
-        reporter.say("\narmed.  Press F9 to start fishing.\n")
+        reporter.say("\narmed.  Click back into the game, then press F9.")
+        reporter.say("(F9 is polled globally, so it works from anywhere - but the "
+                     "*game* only accepts its keys\n when it is the focused window, "
+                     "and this console took the focus when it started.)\n")
 
+    said = set()
+    said_focus = False
+    paused_noted = False
     black_frames = 0
     warned_fullscreen = False
     warned_window = False
@@ -215,11 +293,26 @@ def main(argv: Optional[list] = None) -> int:
                 elif name == "start":
                     if bot.paused:
                         bot.resume()
-                        reporter("info", "fishing")
+                        focus = _focus_advice(source, args, reporter, injector)
+                        reporter("info", "fishing" + (f" - {focus}" if focus else ""))
 
             started = time.time()
             try:
                 source.refresh()
+                # The capture is only refreshed while the bot is *armed*: that
+                # is what "restore the window" costs while it sits waiting for
+                # F9, and no click of ours can land during it.
+                if not bot.paused:
+                    # A click of our own is only allowed when the bot is
+                    # settled and nothing is in flight: never mid-charge, never
+                    # during a bite window, never while a full-screen modal is
+                    # waiting for a button.
+                    focus = _focus_advice(source, args, reporter, injector,
+                                          allow_click=(bot.status.state == WAITING
+                                                       and bot.status.casts > 0))
+                    if focus.startswith("the game window is NOT focused") and not said_focus:
+                        said_focus = True
+                        reporter("warn", focus)
             except RuntimeError as exc:
                 # The game was minimised, closed, or the window handle moved.
                 # Keep the session alive; the loop resumes when it comes back.
@@ -259,7 +352,20 @@ def main(argv: Optional[list] = None) -> int:
             now = time.time()
             if now - last_status > 3.0:
                 last_status = now
-                reporter.say("  " + bot.status.summary())
+                why = "" if bot.status.state != WAITING else bot.diagnose()
+                reporter.say("  " + bot.status.summary() + (f"\n    ... {why}" if why else ""))
+                # A tool that does nothing and says nothing is the worst kind.
+                # Once the loop has had a few seconds to act, print what it is
+                # waiting for - unfocused window, grey prompt, or a pause.
+                if not paused_noted and bot.paused:
+                    paused_noted = note_paused(source, args, reporter, bot)
+                # ...and say the *reason* once, as an event, so it is
+                # timestamped and beeped once instead of scrolling by.  The
+                # status line below repeats it for as long as it lasts.
+                for key, gripe in bot.gripes():
+                    if key not in said:
+                        said.add(key)
+                        reporter("warn", gripe)
             pace(started, args.hz)
     except KeyboardInterrupt:
         reporter.say("\ninterrupted")
@@ -269,6 +375,14 @@ def main(argv: Optional[list] = None) -> int:
             injector.mouse_up("left")
         except Exception:
             pass
+        # The last thing the player does with this window is close it, and the
+        # console is then the focused window: every key they press next goes
+        # into the terminal instead of the game, which looks exactly like "the
+        # tool broke my game".  Give the focus back, unless asked not to.
+        if args.grab_focus and not (args.simulate or args.dry_run):
+            hwnd = _game_hwnd(source)
+            if hwnd and window_alive(hwnd) and not is_foreground(hwnd):
+                activate_window(hwnd)
         st = bot.status
         reporter.say(f"\n{st.summary()}")
         reporter.say(f"session: {st.casts} casts, {st.fish_kept} kept, "

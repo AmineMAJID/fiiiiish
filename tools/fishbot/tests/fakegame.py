@@ -128,6 +128,9 @@ class FakeGame:
         #: ``None`` = a real error card, or one of the impostors the reader must
         #: refuse (``"success"``, ``"block"``, ``"fish"``).
         self.toast_kind = None
+        #: Where the "keyboard focus" is, as :class:`fishbot.winapi.FocusState`
+        #: would report it.  ``None`` = no opinion (the bot does not gate).
+        self.focus = None
         self.show_depth = True       # the depth card is up whenever the rod is out
         self.blocked = False         # the game refusing a cast (too deep, in a car)
         self.injector: Optional[FakeInjector] = None

@@ -55,6 +55,7 @@ SM_CXVIRTUALSCREEN = 78
 SM_CYVIRTUALSCREEN = 79
 
 MONITOR_DEFAULTTONEAREST = 2
+SW_RESTORE = 9       # ShowWindow: un-minimise (no-op for a normal window)
 
 
 # Every Win32 structure below is spelled out with fixed-width types instead of
@@ -111,16 +112,34 @@ class _INPUT(ctypes.Structure):
     _fields_ = [("type", _ULONG), ("u", _INPUTUNION)]
 
 
+#: ``ctypes.WinDLL`` is a *new object* on every call, and the capture path used
+#: to build one per sample - several thousand unnecessary loads an hour.  The
+#: handle is process-wide and stateless, so it is cached, and always rebinds to
+#: this module's ``ctypes`` (the tests install a stand-in by swapping the module
+#: attribute, which is why this is not a plain global).
+_USER32 = None
+_GDI32 = None
+
+
 def _user32():
+    global _USER32
     if not IS_WINDOWS:
         raise RuntimeError("the input/capture layer only runs on Windows")
-    return ctypes.WinDLL("user32", use_last_error=True)
+    if _USER32 is None or getattr(_USER32, "ctypes", ctypes) is not ctypes:
+        _USER32 = ctypes.WinDLL("user32", use_last_error=True)
+    return _USER32
 
 
 def _gdi32():
+    global _GDI32
     if not IS_WINDOWS:
         raise RuntimeError("the input/capture layer only runs on Windows")
-    return ctypes.WinDLL("gdi32", use_last_error=True)
+    if _GDI32 is None or getattr(_GDI32, "ctypes", ctypes) is not ctypes:
+        _GDI32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    return _GDI32
+
+
+_DPI_SET = False
 
 
 def set_dpi_awareness() -> None:
@@ -128,9 +147,15 @@ def set_dpi_awareness() -> None:
 
     Without this, on a scaled display the window rect we read is in logical
     units while the framebuffer is not, and every click lands somewhere else.
+
+    Done **once** per process: ``client_area`` used to reach this on every
+    sample, so the tool asked Windows to change its DPI awareness twenty times a
+    second for no reason at all.
     """
-    if not IS_WINDOWS:
+    global _DPI_SET
+    if not IS_WINDOWS or _DPI_SET:
         return
+    _DPI_SET = True
     try:
         user32 = _user32()
         # PER_MONITOR_AWARE_V2 with a DPI_AWARENESS_CONTEXT of -4
@@ -243,6 +268,140 @@ def window_alive(hwnd: int) -> bool:
         return False
     user32 = _user32()
     return bool(user32.IsWindow(wt.HWND(hwnd)))
+
+
+@dataclass
+class FocusState:
+    """What the *player* would say about focus, in one sample.
+
+    ``game``    the game window is the foreground window: keys and clicks land
+    ``console`` our own console is: everything the tool sends goes nowhere
+    ``other``   something else (browser, Discord, a chat window) is in front
+
+    Kept separate from the capture so the whole decision can be exercised with a
+    fake ``user32`` - this is the failure the player sees as "F9 does nothing",
+    and it must not be debugged by guesswork.
+    """
+
+    hwnd: int = 0
+    foreground: int = 0
+    console: int = 0
+    state: str = "unknown"
+
+    @property
+    def ok(self) -> bool:
+        return self.state == "game"
+
+    def __str__(self) -> str:
+        return self.state
+
+
+def focus_of(hwnd: int) -> FocusState:
+    """Where the keyboard focus is right now, relative to the game."""
+    st = FocusState(hwnd=int(hwnd or 0))
+    if not IS_WINDOWS:
+        st.state = "unknown"
+        return st
+    st.foreground = foreground_window()
+    st.console = own_console_window()
+    if not st.hwnd:
+        st.state = "unknown"
+    elif st.foreground == st.hwnd:
+        st.state = "game"
+    elif st.console and st.foreground == st.console:
+        st.state = "console"
+    else:
+        st.state = "other"
+    return st
+
+
+#: Where do events go when the game is not focused?  A mouse click into the
+#: window *is* the un-filterable, ordinary way a player focuses a game, so the
+#: tool can do it too - but only with the pointer's own blessing (it must have
+#: put the pointer where it is, and it must not be about to fight), and only
+#: when the click cannot land on something that matters.
+AIM_MARGIN = 0.28
+
+
+def aim_point(area: "ClientArea") -> Tuple[int, int]:
+    """A pixel to click to focus the game that is unlikely to press anything.
+
+    Top of the screen, a little in from the left corner: away from the centre
+    (where the crosshair is), away from the bottom (the resource's HUD and its
+    action key), away from the corners (minimap and menus).
+    """
+    return (int(area.left + area.width * AIM_MARGIN),
+            int(area.top + area.height * 0.10))
+
+
+def foreground_window() -> int:
+    """The window that currently has the keyboard focus (0 if none)."""
+    if not IS_WINDOWS:
+        return 0
+    try:
+        return int(_user32().GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+
+
+def is_foreground(hwnd: int) -> bool:
+    """True when ``hwnd`` is the window the player is typing into."""
+    return bool(hwnd) and foreground_window() == int(hwnd)
+
+
+def own_console_window() -> int:
+    """The console this tool is running in, if it has one.
+
+    Used for the one legitimate click the tool makes outside the game: the
+    "confirm" button of the focus prompt, which is the console the player is
+    looking at, so stealing its focus for a moment takes nothing from them.
+    """
+    if not IS_WINDOWS:
+        return 0
+    try:
+        return int(_user32().GetConsoleWindow() or 0)
+    except Exception:
+        return 0
+
+
+def activate_window(hwnd: int) -> bool:
+    """Bring ``hwnd`` to the front, as far as Windows allows.
+
+    A background process is normally forbidden from stealing focus; the
+    ``AttachThreadInput`` dance borrows the foreground thread's input queue for
+    the duration of the call, which is the documented way around it.  It may
+    still be refused (Windows only honours it at certain moments), so the
+    answer is reported rather than assumed.
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+    user32 = _user32()
+    try:
+        if user32.IsIconic(wt.HWND(hwnd)):
+            user32.ShowWindow(wt.HWND(hwnd), SW_RESTORE)
+        fg = user32.GetForegroundWindow()
+        if fg and int(fg) == int(hwnd):
+            return True
+        target_thread = user32.GetWindowThreadProcessId(wt.HWND(hwnd), None)
+        fg_thread = user32.GetWindowThreadProcessId(wt.HWND(fg), None) if fg else 0
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        my_thread = kernel32.GetCurrentThreadId()
+        attached = []
+        for other in {target_thread, fg_thread, my_thread}:
+            if other and other != my_thread:
+                if user32.AttachThreadInput(my_thread, other, True):
+                    attached.append(other)
+        try:
+            user32.BringWindowToTop(wt.HWND(hwnd))
+            user32.SetForegroundWindow(wt.HWND(hwnd))
+            user32.SetFocus(wt.HWND(hwnd))
+        finally:
+            for other in attached:
+                user32.AttachThreadInput(my_thread, other, False)
+        user32.SwitchToThisWindow(wt.HWND(hwnd), True)
+        return int(user32.GetForegroundWindow() or 0) == int(hwnd)
+    except Exception:
+        return False
 
 
 def client_area(hwnd: Optional[int] = None, titles=("FiveM", "Grand Theft Auto V", "GTAV")) -> ClientArea:
@@ -416,11 +575,21 @@ class ScreenSource:
         self._hwnd = hwnd
         self._titles = titles
         self._black_retries = 0
+        #: Where the keyboard focus was the last time the window was refreshed.
+        self.focus = FocusState()
 
     # -- window handling ----------------------------------------------------
     def refresh(self) -> ClientArea:
+        """Re-read the window rect - and notice when the player tabbed away.
+
+        ``GetForegroundWindow`` is a single cheap call per sample, and it is the
+        difference between "the bot is broken" and "the bot is waiting for you to
+        click back in".  It does not *change* anything: the acting is left to the
+        caller, which is the only place that knows whether a click is safe.
+        """
         self._area = client_area(self._hwnd, self._titles)
         self._hwnd = self._area.hwnd
+        self.focus = focus_of(self._hwnd)
         return self._area
 
     @property
@@ -480,6 +649,22 @@ VK_CODES = {
 }
 
 
+def _mouse_absolute(x: int, y: int, desktop: Tuple[int, int, int, int]) -> "_INPUT":
+    """The ``SendInput`` record that puts the pointer at screen ``x``, ``y``.
+
+    Absolute coordinates are 0..65535 across the *virtual* desktop, not pixels:
+    getting this wrong scales every click.
+    """
+    vx, vy, vw, vh = desktop
+    nx = int(round(max(0.0, min(1.0, (x - vx) / (vw - 1))) * 65535.0))
+    ny = int(round(max(0.0, min(1.0, (y - vy) / (vh - 1))) * 65535.0))
+    inp = _INPUT(type=INPUT_MOUSE)
+    inp.mi = _MOUSEINPUT(dx=nx, dy=ny, mouseData=0,
+                         dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                         time=0, dwExtraInfo=0)
+    return inp
+
+
 class Injector:
     """Absolute mouse movement and key presses, with an off switch.
 
@@ -500,6 +685,7 @@ class Injector:
             set_dpi_awareness()
             self._user32 = _user32()
         self.last_cursor: Optional[Tuple[int, int]] = None
+        self._moved_by_us = False
 
     #: Subclasses (and tests) can supply a stand-in for user32; on a real run
     #: this is the loaded DLL.
@@ -527,6 +713,11 @@ class Injector:
         Input aimed at a minimised or backgrounded game is not merely useless -
         it lands in whatever the player *is* looking at, which is how an
         automation tool types nonsense into somebody's chat window.
+
+        ``focus_click`` is the single exception: the tool is allowed to take the
+        focus back with one click of its own, because that is exactly what a
+        player does, and because a run that refuses to do it simply sits there
+        doing nothing while the console owns the keyboard.
         """
         if self.dry_run or not self.require_foreground or not self.target_hwnd:
             return True
@@ -534,6 +725,27 @@ class Injector:
             return False
         fg = self._user32.GetForegroundWindow()
         return int(fg) == int(self.target_hwnd)
+
+    def ensure_foreground(self, area: Optional["ClientArea"] = None,
+                          allow_click: bool = True) -> str:
+        """Make sure the game will receive the next event; return what happened.
+
+        ``'game'``      it already had the focus
+        ``'activated'`` Windows let us take it without a click
+        ``'clicked'``   one click on an empty piece of the screen did it
+        ``'refused'``   none of that worked (or was allowed) - the caller must
+                        say so rather than send events into the void
+        """
+        if self.dry_run or not self.require_foreground or not self.target_hwnd:
+            return "game"
+        if self.foreground_ok():
+            return "game"
+        if activate_window(self.target_hwnd) and self.foreground_ok():
+            return "activated"
+        if allow_click and area is not None:
+            if self.click_for_focus(area) is not None and self.foreground_ok():
+                return "clicked"
+        return "refused"
 
     def _record(self, kind: str, **kw) -> None:
         self.history.append((kind, kw))
@@ -548,21 +760,14 @@ class Injector:
             return
         if not self.foreground_ok():
             raise RuntimeError("the game window is not focused; refusing to move the mouse")
-        vx, vy, vw, vh = self._virtual_desktop()
-        # SendInput's absolute coordinates are 0..65535 across the *virtual*
-        # desktop, not pixels: getting this wrong scales every click.
-        nx = int(round(max(0.0, min(1.0, (x - vx) / (vw - 1))) * 65535.0))
-        ny = int(round(max(0.0, min(1.0, (y - vy) / (vh - 1))) * 65535.0))
-        inp = _INPUT(type=INPUT_MOUSE)
-        inp.mi = _MOUSEINPUT(dx=nx, dy=ny, mouseData=0,
-                             dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-                             time=0, dwExtraInfo=0)
-        self._send(inp)
+        self._send(_mouse_absolute(x, y, self._virtual_desktop()))
         self.last_cursor = (x, y)
+        self._moved_by_us = True
 
     def move_relative(self, dx: int, dy: int) -> None:
         """Relative motion, in raw mouse units (what the camera reacts to)."""
         self._record("move_rel", dx=dx, dy=dy)
+        self._moved_by_us = True          # the pointer has moved; it is ours now
         if self.dry_run:
             if self.last_cursor:
                 self.last_cursor = (self.last_cursor[0] + dx, self.last_cursor[1] + dy)
@@ -573,6 +778,50 @@ class Injector:
         inp.mi = _MOUSEINPUT(dx=int(dx), dy=int(dy), mouseData=0,
                              dwFlags=MOUSEEVENTF_MOVE, time=0, dwExtraInfo=0)
         self._send(inp)
+
+    # -- focus --------------------------------------------------------------
+    def pointer_owns(self) -> bool:
+        """Did *we* put the pointer where it is?
+
+        The one thing the tool must never do is steal a click from the player
+        or land one where they had the pointer.  ``last_cursor`` is only set by
+        our own moves, so this is a positive statement about the pointer, not a
+        guess about theirs.
+        """
+        return self.last_cursor is not None and self._moved_by_us
+
+    def click_for_focus(self, area: "ClientArea") -> Optional[Tuple[int, int]]:
+        """Click an empty part of the game to give it the focus.  Once.
+
+        Anything else - ``SetForegroundWindow`` from a background process, a
+        simulated Alt+Tab - is either refused by Windows or drags the player's
+        other windows around.  A click is what a human does, it is accepted, and
+        it changes nothing *if* it lands where it cannot press anything: see
+        :func:`aim_point`.
+
+        Refused (``None``) when the pointer is not ours to move, when the game
+        is minimised, or when the click would land on the resource's HUD.
+        """
+        if self.dry_run or not self.target_hwnd:
+            return None
+        if not self.pointer_owns():
+            return None
+        if self._user32.IsIconic(wt.HWND(self.target_hwnd)):
+            return None
+        x, y = aim_point(area)
+        # Inside the game's own picture, and out of the HUD's way.
+        if not (area.left <= x <= area.left + area.width
+                and area.top <= y <= area.top + area.height):
+            return None
+        self._record("focus_click", x=x, y=y)
+        # Ungated on purpose: this click *is* the thing that makes the gate true.
+        self._send_raw(_mouse_absolute(x, y, self._virtual_desktop()))
+        self.last_cursor = (x, y)
+        for flags in (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP):
+            inp = _INPUT(type=INPUT_MOUSE)
+            inp.mi = _MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flags, time=0, dwExtraInfo=0)
+            self._send_raw(inp)          # not gated: this click *is* the gate
+        return x, y
 
     def invalidate_desktop(self) -> None:
         """Forget the cached desktop rectangle (after a display change)."""
@@ -649,6 +898,10 @@ class Injector:
     def _send(self, inp: "_INPUT") -> None:
         if not self.foreground_ok():
             raise RuntimeError("the game window is not focused; refusing to send input")
+        self._send_raw(inp)
+
+    def _send_raw(self, inp: "_INPUT") -> None:
+        """Send without the foreground gate - only for the focus click itself."""
         self._user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
         self._sent += 1
 

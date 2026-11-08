@@ -183,6 +183,24 @@ The tool only acts on evidence the resource itself publishes:
   icon plate of the same colour, a flat dark panel beside them) and refuses
   everything else in that corner — a red boat, a shark, another script's UI.
 
+## Focus: the reason "F9 does nothing"
+
+Windows delivers `SendInput` events to the **focused** window only. The console
+that starts the tool is the focused window, so the first `F9` genuinely does
+nothing - not because the hotkey was missed, but because the game never saw a
+key press. So:
+
+* after `F9` the tool makes sure the game is focused, and **says which way it
+  managed**: already focused, brought forward, or *one click in an empty corner*
+  (top of the screen, 28 % in from the left - away from the crosshair, the HUD
+  and the corners). `--no-grab-focus` turns that off entirely;
+* it never sends an event while the game is not focused - a keystroke meant for
+  a fishing prompt landing in somebody's Discord is not an acceptable failure
+  mode;
+* when it is idle it says *why*, once, instead of sitting there mute:
+  `waiting 3 s: the depth card is not on screen`, `the cast prompt is greyed
+  out`, `paused (waiting for F9)`, `the game window is NOT focused`.
+
 ## When it stops
 
 * **A red notification card on screen**: pause + beep, and it says which slot

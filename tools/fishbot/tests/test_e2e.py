@@ -282,8 +282,8 @@ def test_cast_gate() -> None:
     loop.run(seconds=15.0)
     check("no cast while the game refuses", game.casts == casts_before,
           f"casts {casts_before} -> {game.casts}")
-    check("it says why", "cannot cast" in loop.bot.status.last_event,
-          f"{loop.bot.status.last_event!r}")
+    check("it says why", "cast prompt" in loop.bot.diagnose(),
+          f"{loop.bot.diagnose()!r}")
 
     game.blocked = False
     loop.run_until_fish(seconds=200, target=2)

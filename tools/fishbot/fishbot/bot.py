@@ -160,6 +160,8 @@ class BotConfig:
     is only redrawn when its contents change, so it can lag the catch card."""
 
     gate_wait_log: float = 12.0
+    """Kept for compatibility: the wait is now reported by :meth:`gripes` from
+    the first second, in the status line and once as an event."""
     """How long to wait on a blocked/absent gate before telling the user why."""
 
     idle_ticks: int = 6
@@ -261,6 +263,9 @@ class FishingBot:
         self._toast_slot: Optional[int] = None
         self._toast_reason: str = ""
         self._toast_mute = False
+        self._last_gate = None
+        self._bad_frames = 0
+        self._last_note = ""
 
     # ── control ------------------------------------------------------------
     def stop(self) -> None:
@@ -279,6 +284,10 @@ class FishingBot:
         # A *new* card (one drawn after the card leaves the screen) still stops
         # it, which is what matters.
         self._toast_mute = self._toast_since is not None
+        # ...and the same for the cast gate: the player may have fixed the depth
+        # or moved out of the vehicle while it was paused, so start the wait
+        # fresh instead of reporting "waiting 47 s" the moment it resumes.
+        self._gate_since = None
 
     @property
     def stopped(self) -> bool:
@@ -357,6 +366,20 @@ class FishingBot:
         self._frame = frame
         self.check_toasts(frame)
 
+        # Never press a key into a window that is not focused - it would land in
+        # whatever the player *is* looking at.  The runner may fix the focus;
+        # until it does, this sample is spent waiting.
+        if not self._can_send():
+            self._last_note = "the game window does not have the focus"
+            return
+
+        # Everything else is a reading, and a reading is untrustworthy when the
+        # picture is not the game: a black frame, or a shrunk window, turns a
+        # missing HUD into "the screen is empty", which casts, strikes and gets
+        # the loop out of step with the game.
+        if self._capture_unusable(frame):
+            return
+
         handler = getattr(self, f"_on_{self._state}", None)
         if handler is None:
             self._go(WAITING)
@@ -424,6 +447,7 @@ class FishingBot:
         # saying no, and no amount of E will change that.
         if self.config.require_cast_gate:
             gate = vision.read_cast_gate(frame)
+            self._last_gate = gate
             if not gate.ready:
                 if self._gate_since is None:
                     self._gate_since = now
@@ -435,11 +459,8 @@ class FishingBot:
                 # nothing for ever.
                 if waited < self.config.gate_grace:
                     return
-                if not self._gate_warned and waited > self.config.gate_wait_log:
-                    self._gate_warned = True
-                    state = "blocked" if gate.blocked else "not on screen"
-                    self._event("warn", f"cannot cast: the game's cast prompt is {state} "
-                                       f"(too deep, in a vehicle, or no water?)")
+                # The reason is reported by ``gripes()`` (once, from the runner):
+                # repeating it here as well was two messages for one wait.
                 return
             self._gate_since = None
 
@@ -629,6 +650,83 @@ class FishingBot:
         self._awaiting_fight = False
         self._settle_limit = self.config.post_decision_delay
         self._go(SETTLE, "decided")
+
+    def _can_send(self) -> bool:
+        """Would an event sent right now reach the game?"""
+        gate = getattr(self.injector, "foreground_ok", None)
+        if gate is not None:
+            try:
+                return bool(gate())
+            except Exception:
+                return True
+        # No gate on the injector (a stand-in): ask the *source*, which is what
+        # knows which window the picture came from.
+        focus = getattr(self.source, "focus", None)
+        state = getattr(focus, "state", None)
+        return state in (None, "game", "unknown")
+
+    def _capture_unusable(self, frame) -> bool:
+        """Is this frame clearly *not* the game's picture?"""
+        import numpy as _np
+        if float(frame.arr.max()) < 8:
+            self._bad_frames += 1
+            if self._bad_frames == 40:
+                self._event("warn", "the capture is black - the game is not drawing "
+                                    "where its window is (switch it to borderless)")
+            return True
+        if _np.asarray(frame.viewport)[0] < 320 or _np.asarray(frame.viewport)[1] < 200:
+            self._bad_frames += 1
+            return True
+        self._bad_frames = 0
+        return False
+
+    def diagnose(self) -> str:
+        """The one thing standing in the way, for the status line.  '' = nothing.
+
+        The status line is printed every three seconds whether or not anything
+        is happening, so it is the right place for "why nothing is happening":
+        the player reads one line per interval, not a wall of messages.
+        """
+        gripes = self.gripes()
+        return gripes[0][1] if gripes else ""
+
+    def gripes(self) -> list:
+        """``(key, text)`` for everything currently standing in the way.
+
+        Empty means "if nothing is happening, it is the game, not me".  The
+        runner prints these while the bot sits idle, because "nothing happens"
+        is the least debuggable state a tool has, and the honest answer is
+        almost always one of these.
+
+        The key is stable while the situation is (``gate-missing``, ``paused``),
+        so the caller can say the same thing once instead of every few seconds -
+        and so a beep only happens when something *new* is wrong.
+        """
+        out = []
+        if self._last_note:
+            out.append(("focus", self._last_note))
+        if self._pause:
+            reason = self.status.paused_reason or "paused"
+            out.append(("paused", f"paused ({reason}) - F9 resumes"))
+        if not self._gate_since:
+            return out
+        waited = self.clock() - self._gate_since
+        if waited < 1.0:
+            return out
+        gate = self._last_gate
+        if gate is None or not gate.present:
+            out.append(("gate-missing",
+                        f"waiting {waited:.0f} s: the depth card is not on screen - the "
+                        "rod must be out, and there must be water in front of you"))
+        elif gate.blocked:
+            out.append(("gate-blocked",
+                        f"waiting {waited:.0f} s: the cast prompt is greyed out - the game "
+                        "refuses the cast (too deep, in a vehicle, or no water?)"))
+        else:
+            out.append(("gate-notready",
+                        f"waiting {waited:.0f} s for the cast prompt to turn green "
+                        f"(card {gate.card:.2f}, no green key yet)"))
+        return out
 
     # ── pause on a refusal ------------------------------------------------
     def check_toasts(self, frame) -> None:

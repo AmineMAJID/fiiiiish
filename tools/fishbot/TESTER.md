@@ -73,6 +73,21 @@ regarde les messages : il doit annoncer `cast #1`, `bite - striking`,
 C'est l'étape qui valide tout sans risque. Si les messages tombent juste, tu peux
 passer à la suite.
 
+## Étape 3 bis — « F9 ne fait rien » (le piège classique)
+
+Tout ce que le bot envoie passe par `SendInput`, et Windows n'envoie ça qu'à la
+fenêtre qui a **le focus**. Or c'est la console qui l'a, puisqu'elle vient de
+s'ouvrir : le jeu ne voit donc ni le `E`, ni les clics, ni la souris.
+
+Le bot le sait et le dit maintenant : après `F9` il annonce soit
+`the game has the focus`, soit `took the focus back to the game`, soit
+`focused the game with one click in an empty corner` (un clic unique dans le
+coin haut-gauche du jeu, là où il ne peut rien déclencher), soit
+`the game window is NOT focused…` avec la marche à suivre.
+
+Si tu préfères le faire à la main : **un clic dans le jeu**, puis `F9`.
+`--no-grab-focus` désactive complètement cette reprise de focus.
+
 ## Étape 4 — le vrai test (commence petit)
 
 ```powershell
@@ -119,6 +134,9 @@ Copie-moi la sortie console (elle dit déjà beaucoup) et, si c'est visuel,
 | `cannot cast: the game's cast prompt is blocked` | il voit bien la clé grise : problème de position/depth côté jeu, pas du bot |
 | `no reeling HUD after the strike` | le ferrrage rate, ou le HUD du combat n'est pas lu |
 | `fight timed out` | le contrôleur ne progresse pas : mauvais mapping souris/sensibilité |
+| `waiting N s: the depth card is not on screen` | la canne n'est pas sortie, ou tu ne regardes pas l'eau : le bot attend, il ne forcera pas |
+| `waiting N s: the cast prompt is greyed out` | la clé `E` du HUD est grise : trop profond, en véhicule, ou pas d'eau devant |
+| `the game window is NOT focused` | la console a le focus : un clic dans le jeu, puis `F9` |
 | `paused - the game showed an error card` alors que ton sac n'est pas plein | regarde `fishbot-snapshot.png` : la pile de notifications y est entourée en **orange**. Si un rectangle orange tombe sur autre chose que la colonne de cartes en bas à gauche, c'est de la géométrie, envoie-moi l'image |
 
 Ce dernier cas est réglable sans moi : `--sensitivity` fixe le point de départ

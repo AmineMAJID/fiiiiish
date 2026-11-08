@@ -238,6 +238,228 @@ def test_armed_until_start() -> None:
         os.environ.pop(settings.SETTINGS_ENV, None)
 
 
+class _FakeUser32:
+    """Just enough of user32 to decide where the focus is."""
+
+    def __init__(self, foreground=0, console=0, game=1):
+        self.foreground = foreground
+        self.console = console
+        self.game = game
+        self.activated = 0
+        self.clicked_moves = 0
+
+    # window queries -------------------------------------------------------
+    def IsIconic(self, hwnd):
+        return False
+
+    def IsWindow(self, hwnd):
+        return True
+
+    def GetForegroundWindow(self):
+        return self.foreground
+
+    def GetConsoleWindow(self):
+        return self.console
+
+    def GetWindowThreadProcessId(self, hwnd, _):
+        return 42
+
+    # activation ----------------------------------------------------------
+    def ShowWindow(self, hwnd, cmd):
+        return 1
+
+    def BringWindowToTop(self, hwnd):
+        return 1
+
+    def SetFocus(self, hwnd):
+        return 1
+
+    def SwitchToThisWindow(self, hwnd, flag):
+        return 1
+
+    def AttachThreadInput(self, a, b, attach):
+        return 1
+
+    def SetForegroundWindow(self, hwnd):
+        # Windows only sometimes honours this; here it always does, so the
+        # "works without a click" path is the one exercised first.
+        self.activated += 1
+        self.foreground = int(hwnd)
+        return 1
+
+    # input ---------------------------------------------------------------
+    def GetSystemMetrics(self, index):
+        return {76: 0, 77: 0, 78: 1920, 79: 1080}.get(index, 0)
+
+    def SendInput(self, count, ptr, size):
+        self.clicked_moves += 1
+        return count
+
+
+class _StubbornUser32(_FakeUser32):
+    """``SetForegroundWindow`` is refused, as Windows usually refuses it."""
+
+    def SetForegroundWindow(self, hwnd):
+        return 0
+
+
+class _FakeInjectorUser32(_StubbornUser32):
+    """Refuses activation, and only takes the focus after a click."""
+
+    def SendInput(self, count, ptr, size):
+        self.clicked_moves += 1
+        self.foreground = self.game       # a click is what actually focuses
+        return count
+
+
+def _with_user32(winapi, fake):
+    """Hand ``fake`` to the module as its user32, as the capture tests do."""
+    winapi._user32 = lambda: fake
+    winapi.IS_WINDOWS = True
+    return fake
+
+
+def test_focus() -> None:
+    print("\n[focus: F9 arrives, but the game must be the window that gets the keys]")
+    from fishbot import winapi
+
+    real_user32, real_windows = winapi._user32, winapi.IS_WINDOWS
+    try:
+        # 1. where is the focus, said plainly
+        fake = _FakeUser32(foreground=11, console=7, game=11)
+        _with_user32(winapi, fake)
+        check("the game has the focus", winapi.focus_of(11).ok, str(winapi.focus_of(11)))
+        fake.foreground = 7
+        check("our own console has it", winapi.focus_of(11).state == "console",
+              str(winapi.focus_of(11)))
+        fake.foreground = 99
+        check("something else has it", winapi.focus_of(11).state == "other",
+              str(winapi.focus_of(11)))
+
+        # 2. the click that takes it back lands where it can press nothing
+        from fishbot.winapi import ClientArea, aim_point
+        area = ClientArea(hwnd=11, title="FiveM", left=0, top=0, width=1920, height=1080,
+                          monitor_left=0, monitor_top=0, monitor_width=1920,
+                          monitor_height=1080)
+        ax, ay = aim_point(area)
+        check("the focus click is near the top, away from the HUD and the crosshair",
+              area.left < ax < area.left + area.width * 0.5
+              and ay < area.top + area.height * 0.25, f"({ax},{ay})")
+
+        # 3. the injector is allowed exactly one thing it is not gated on: that click
+        fake = _FakeInjectorUser32(foreground=7, console=7, game=11)
+        _with_user32(winapi, fake)
+        inj = winapi.Injector(require_foreground=True, target_hwnd=11)
+        check("a background game is not a place to send input", not inj.foreground_ok())
+        check("no click while the pointer is not ours", inj.click_for_focus(area) is None)
+        # The pointer becomes ours the first time the tool moves it - which can
+        # only happen once the game is focused, so the click path is entered
+        # from a run that has already fished at least one cast.
+        inj._moved_by_us = True
+        inj.last_cursor = (900, 700)
+        how = inj.ensure_foreground(area)
+        check("it got the focus, and says how", how in ("clicked", "activated"), how)
+        check("the game is focused afterwards", inj.foreground_ok())
+        check("exactly one click was spent", fake.clicked_moves >= 1,
+              f"{fake.clicked_moves}")
+
+        # 4. a click is never sent when the game is minimised
+        class _Minimised(_FakeInjectorUser32):
+            def IsIconic(self, hwnd):
+                return True
+
+        fake = _Minimised(foreground=7, console=7, game=11)
+        _with_user32(winapi, fake)
+        inj = winapi.Injector(require_foreground=True, target_hwnd=11)
+        inj._moved_by_us = True
+        inj.last_cursor = (900, 700)
+        before = fake.clicked_moves
+        check("a minimised game gets no click", inj.click_for_focus(area) is None)
+        check("...and nothing was sent", fake.clicked_moves == before,
+              f"{before} -> {fake.clicked_moves}")
+    finally:
+        winapi._user32 = real_user32
+        winapi.IS_WINDOWS = real_windows
+
+
+def test_idle_diagnosis() -> None:
+    """A tool that sits there silently is the worst kind.  It must say why."""
+    print("\n[when nothing happens, it says what it is waiting for]")
+    from fishbot.bot import FishingBot, BotConfig, WAITING
+    from fishbot import simhud
+    from fishbot.vision import Frame
+    from fishbot.winapi import FocusState
+
+    class _Source:
+        """A frame source that can be told what to show and who has the focus."""
+
+        def __init__(self):
+            self.focus = FocusState(state="game")
+            self.now = lambda: t[0]
+            self.frames = 0
+
+        def grab(self):
+            self.frames += 1
+            img = simhud._blank(640, 360, "sea")
+            return Frame(arr=img, width=640, height=360, timestamp=self.now())
+
+        def to_screen(self, nx, ny):
+            return int(nx * 1920), int(ny * 1080)
+
+    class _Inj:
+        def __init__(self):
+            self.sent = []
+
+        def foreground_ok(self):
+            return True
+
+        def key_down(self, *_):
+            self.sent.append("down")
+
+        def key_up(self, *_):
+            self.sent.append("up")
+
+        def mouse_down(self, *_):
+            pass
+
+        def mouse_up(self, *_):
+            pass
+
+        def click(self, *_):
+            pass
+
+    t = [0.0]
+    events = []
+    src, inj = _Source(), _Inj()
+    bot = FishingBot(source=src, injector=inj,
+                     config=BotConfig(require_cast_gate=True, idle_ticks=2),
+                     notify=lambda level, msg: events.append((level, msg)),
+                     clock=lambda: t[0], sleep=lambda s: t.__setitem__(0, t[0] + s))
+    for _ in range(8):
+        bot.step()
+        t[0] += 0.5
+    gripes = bot.gripes()
+    check("a long wait is reported, and says what it is waiting for",
+          any(k == "gate-missing" and ("water" in g or "rod" in g) for k, g in gripes),
+          str(gripes))
+    check("the message is stable while the situation is (so it is said once)",
+          bot.gripes()[0][0] == "gate-missing", str(bot.gripes()))
+    check("the wording is accurate: no card at all is not 'greyed out'",
+          any("depth card is not on screen" in g for k, g in gripes), str(gripes))
+
+    # an unfocused window is the other way "nothing happens"
+    src.focus = FocusState(state="console")
+    inj.foreground_ok = lambda: False
+    before = len(inj.sent)
+    for _ in range(6):
+        bot.step()
+        t[0] += 0.5
+    check("no key is pressed while the console has the focus", len(inj.sent) == before,
+          f"{before} -> {len(inj.sent)}")
+    check("and that is what it says", any(k == "focus" for k, _ in bot.gripes()),
+          str(bot.gripes()))
+
+
 def test_ask_for_numpy() -> None:
     print("\n[no numpy: it says so instead of running blind]")
     original = vision.HAVE_NUMPY
@@ -256,6 +478,8 @@ def main() -> int:
     test_snapshot()
     test_program_runs()
     test_armed_until_start()
+    test_focus()
+    test_idle_diagnosis()
     test_ask_for_numpy()
     print()
     if failures:

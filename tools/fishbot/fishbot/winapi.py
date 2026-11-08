@@ -281,28 +281,35 @@ def _capture_region(area: ClientArea, src_w: int, src_h: int,
     user32 = _user32()
     gdi32 = _gdi32()
 
-    hdc_window = user32.GetDC(area.hwnd)
+    hdc_window = user32.GetDC(wt.HWND(area.hwnd))
     if not hdc_window:
         raise RuntimeError("GetDC failed")
-    hdc_mem = gdi32.CreateCompatibleDC(hdc_window)
-    hdc_dst = gdi32.CreateCompatibleDC(hdc_window)
-    bmp = None
-    bmp_dst = None
+    hdc_mem = hdc_dst = bmp = bmp_dst = None
     try:
-        bmp = gdi32.CreateCompatibleBitmap(hdc_window, max(1, src_w), max(1, src_h))
+        hdc_mem = gdi32.CreateCompatibleDC(hdc_window)
+        hdc_dst = gdi32.CreateCompatibleDC(hdc_window)
+        if not hdc_mem or not hdc_dst:
+            raise RuntimeError("CreateCompatibleDC failed")
+        # PrintWindow always renders the *whole* window, so the intermediate
+        # bitmap has to be the window's size; BitBlt only needs the piece we
+        # asked for.  Both are then stretched down to the capture size.
+        bmp_w, bmp_h = (max(1, area.width), max(1, area.height)) if method == "printwindow" \
+            else (max(1, src_w), max(1, src_h))
+        bmp = gdi32.CreateCompatibleBitmap(hdc_window, bmp_w, bmp_h)
         gdi32.SelectObject(hdc_mem, bmp)
         ok = False
         if method == "printwindow":
             ok = bool(user32.PrintWindow(wt.HWND(area.hwnd), hdc_mem, PW_RENDERFULLCONTENT))
         if not ok:
             ok = bool(gdi32.BitBlt(hdc_mem, 0, 0, src_w, src_h, hdc_window, 0, 0, SRCCOPY))
+            bmp_w, bmp_h = max(1, src_w), max(1, src_h)
         if not ok:
             raise RuntimeError("both PrintWindow and BitBlt failed")
 
         bmp_dst = gdi32.CreateCompatibleBitmap(hdc_window, dst_w, dst_h)
         gdi32.SelectObject(hdc_dst, bmp_dst)
         gdi32.SetStretchBltMode(hdc_dst, 3)  # HALFTONE
-        gdi32.StretchBlt(hdc_dst, 0, 0, dst_w, dst_h, hdc_mem, 0, 0, src_w, src_h, SRCCOPY)
+        gdi32.StretchBlt(hdc_dst, 0, 0, dst_w, dst_h, hdc_mem, 0, 0, bmp_w, bmp_h, SRCCOPY)
 
         info = _BITMAPINFO()
         info.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
@@ -319,13 +326,18 @@ def _capture_region(area: ClientArea, src_w: int, src_h: int,
         arr = np.frombuffer(buf.raw, dtype=np.uint8).reshape(dst_h, dst_w, 4)
         return arr[:, :, [2, 1, 0]].copy()  # BGRA -> RGB
     finally:
-        if bmp:
-            gdi32.DeleteObject(bmp)
+        # Release everything in the reverse order it was acquired, and only what
+        # was actually acquired: a GDI handle leak is invisible until the game
+        # has been fished for an hour, and then the capture stops working.
         if bmp_dst:
             gdi32.DeleteObject(bmp_dst)
-        gdi32.DeleteDC(hdc_mem)
-        gdi32.DeleteDC(hdc_dst)
-        user32.ReleaseDC(area.hwnd, hdc_window)
+        if bmp:
+            gdi32.DeleteObject(bmp)
+        if hdc_dst:
+            gdi32.DeleteDC(hdc_dst)
+        if hdc_mem:
+            gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(wt.HWND(area.hwnd), hdc_window)
 
 
 class FakeSource:

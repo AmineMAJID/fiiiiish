@@ -205,6 +205,29 @@ def test_no_click_during_fight() -> None:
     check("the fight state was exercised", FIGHT in states_seen, f"{sorted(states_seen)}")
 
 
+def test_cast_gate() -> None:
+    print("\n[the game decides: no cast while its prompt is grey]")
+    game = FakeGame(seed=41)
+    loop = Loop(game)
+    loop.run_until_fish(seconds=200, target=1)
+    check("cast while the prompt was green", game.casts >= 1, f"casts={game.casts}")
+
+    game.blocked = True
+    casts_before = game.casts
+    loop.run(seconds=15.0)
+    check("no cast while the game refuses", game.casts == casts_before,
+          f"casts {casts_before} -> {game.casts}")
+    check("it says why", "cannot cast" in loop.bot.status.last_event,
+          f"{loop.bot.status.last_event!r}")
+
+    game.blocked = False
+    loop.run_until_fish(seconds=200, target=2)
+    check("casts again once the prompt is green", game.casts > casts_before,
+          f"casts {casts_before} -> {game.casts}")
+    check("no refused casts overall", "cast while the game was refusing it" not in game.mistakes,
+          f"{game.mistakes[:2]}")
+
+
 def test_mixed_conditions() -> None:
     print("\n[randomised clients: sensitivity, band, mouse sign, bite timing]")
     import random
@@ -239,6 +262,7 @@ def main() -> int:
     test_start_mid_fight()
     test_cast_card_blocks_second_cast()
     test_no_click_during_fight()
+    test_cast_gate()
     test_mixed_conditions()
     print()
     if failures:

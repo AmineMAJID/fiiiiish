@@ -130,6 +130,24 @@ class BotConfig:
     drawn yet.
     """
 
+    require_cast_gate: bool = True
+    """Only press E when the depth card's action key is green.
+
+    The resource refuses a cast when the water probe fails, when the player is
+    in a vehicle or near the job ped, or when the water is deeper than the rod
+    allows - and in all of those cases the action key is drawn slate grey with
+    the reason beside it instead of green.  Casting on grey spends an E and
+    gains nothing, so the green key is the trigger.
+    """
+
+    gate_grace: float = 2.5
+    """After the previous catch, how long the gate is given to come back before
+    the bot falls back to "the screen looks idle, cast anyway".  The depth card
+    is only redrawn when its contents change, so it can lag the catch card."""
+
+    gate_wait_log: float = 12.0
+    """How long to wait on a blocked/absent gate before telling the user why."""
+
     idle_ticks: int = 6
     """Idle *samples* required as well, so a capture that reports the same
     timestamp twice never fires a second cast."""
@@ -210,6 +228,8 @@ class FishingBot:
         self._last_reading = None
         self._events = []
         self._idle_since: Optional[float] = None
+        self._gate_since: Optional[float] = None
+        self._gate_warned = False
         self._idle_ticks = 0
         self._awaiting_fight = False
         self._fight_ticks = 0
@@ -369,6 +389,30 @@ class FishingBot:
             self._idle_ticks = 0
             return
         self._idle_ticks += 1
+
+        # The green action key is the game saying "go"; anything else is it
+        # saying no, and no amount of E will change that.
+        if self.config.require_cast_gate:
+            gate = vision.read_cast_gate(frame)
+            if not gate.ready:
+                if self._gate_since is None:
+                    self._gate_since = now
+                    self._gate_warned = False
+                waited = now - self._gate_since
+                # The card lags a couple of seconds behind the end of a catch,
+                # so the first cast after a fish may not see it yet; after that,
+                # insist - and if it never comes, say why instead of casting at
+                # nothing for ever.
+                if waited < self.config.gate_grace:
+                    return
+                if not self._gate_warned and waited > self.config.gate_wait_log:
+                    self._gate_warned = True
+                    state = "blocked" if gate.blocked else "not on screen"
+                    self._event("warn", f"cannot cast: the game's cast prompt is {state} "
+                                       f"(too deep, in a vehicle, or no water?)")
+                return
+            self._gate_since = None
+
         if (now - self._idle_since >= self.config.idle_before_cast
                 and self._idle_ticks >= self.config.idle_ticks):
             self._idle_since = None

@@ -111,7 +111,8 @@ What is read, and how:
 
 | question | where | how |
 | --- | --- | --- |
-| is the reel HUD up? | the mini-game panel | bar-track contrast |
+| **may I cast at all?** | the depth card's action key | green plate vs slate plate |
+| is the reel HUD up? | the mini-game panel | bar-track contrast + the card itself |
 | which way to pull | the lit chevron | left-vs-right brightness ratio |
 | line tension (danger) | the tension bar | saturated fill width |
 | reel progress | the progress bar | saturated fill width |
@@ -154,6 +155,23 @@ measurement rather than a guess:
 Fight simulation results (`python -m tests.test_fight`): **100 % wins, 0 snaps**
 across all four depth bands, including inverted mouse, a wrong starting
 direction, and a wild sensitivity guess.
+
+## What it refuses to do
+
+The tool only acts on evidence the resource itself publishes:
+
+* **It does not cast unless the game's prompt is green.** `StartFishing` runs on
+  `E` only when the water probe succeeded and nothing blocks it — in a vehicle,
+  near the job ped, or water deeper than your rod allows. In all of those cases
+  the prompt is drawn slate grey with the reason beside it, and `E` would be
+  spent for nothing. The bot reads the prompt and waits; after twelve seconds it
+  tells you what it is waiting for.
+* **It does not press `E` twice.** E cancels a cast that is already waiting for a
+  bite, and E during a reel snaps the line, so the state machine only strikes
+  when the bite HUD is on screen and never touches the keyboard during a fight.
+* **It does not click a catch card twice**, even though a capture is a snapshot
+  and the card is still visible in the frame after the click.
+* **It does not guess at a full bag.** A red toast stops it and calls you.
 
 ## When it stops
 
@@ -207,9 +225,9 @@ Lua — including a camera sign the bot does not know.
 * **Exclusive fullscreen** cannot be captured by a desktop tool (the picture
   never reaches a surface Windows will hand over). Use borderless; the tool
   detects the black frame and tells you.
-* **Resolution changes** are handled, but the capture source watches the window
-  rect, not the game settings — if you switch modes mid-session, expect one
-  sample of confusion at most.
+* **Resolution changes** are handled: the window rect is re-read every sample and
+  the HUD boxes are re-derived from it, so resizing, moving monitors or switching
+  between windowed and borderless needs no restart.
 * **Anticheat**: `SendInput` is what a real mouse does, so this is invisible to
   anything that only inspects input. It is still automation, and whether that is
   allowed is a question for your server's rules, not for this README.

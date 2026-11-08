@@ -124,6 +124,22 @@ def test_cast_power() -> None:
                   f"got {got.power:.3f} present={got.present}")
 
 
+def test_cast_gate() -> None:
+    print("\n[the cast prompt: green key = go, grey key = the game says no]")
+    for fw, fh in ((1920, 1080), (1280, 720), (2560, 1440), (3840, 2160), (1080, 1080)):
+        for world in WORLDS:
+            plain = vision.read_cast_gate(frame(simhud._blank(fw, fh, world), fw, fh))
+            check(f"no prompt on a plain {world} frame at {fw}x{fh}", not plain.present,
+                  str(plain))
+            ready = vision.read_cast_gate(
+                frame(simhud.render_depth_card(fw, fh, True, world), fw, fh))
+            check(f"green prompt reads ready at {fw}x{fh} ({world})", ready.ready, str(ready))
+            blocked = vision.read_cast_gate(
+                frame(simhud.render_depth_card(fw, fh, False, world), fw, fh))
+            check(f"grey prompt reads blocked at {fw}x{fh} ({world})",
+                  blocked.blocked and not blocked.ready, str(blocked))
+
+
 def test_plain_frames_are_empty() -> None:
     print("\n[nothing on screen is not mistaken for something]")
     for fw, fh in RESOLUTIONS:
@@ -217,6 +233,7 @@ def main() -> int:
     test_presence()
     test_bite_ring()
     test_cast_power()
+    test_cast_gate()
     test_plain_frames_are_empty()
     test_scaled_capture()
     test_catch_modal()

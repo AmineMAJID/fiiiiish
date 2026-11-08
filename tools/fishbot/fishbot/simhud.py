@@ -23,7 +23,8 @@ from typing import Optional, Tuple
 
 import numpy as np  # this module only ever runs where numpy is installed
 
-from .geometry import cast_layout, catch_modal_layout, fight_layout, notify_layout, rem, bite_layout
+from .geometry import (bite_layout, cast_layout, catch_modal_layout, depth_layout,
+                       fight_layout, notify_layout, rem)
 
 # The HUD font stack never renders these; the renderer uses a cheap box-drawing
 # stand-in, which is fine because the detectors only look at colour and coverage.
@@ -38,6 +39,7 @@ AMBER = (245, 158, 11)
 RED = (239, 68, 68)
 TEXT = (226, 232, 240)
 DIM = (100, 116, 139)
+SLATE = (51, 65, 85)
 
 
 def _blank(fw: int, fh: int, world: str = "sea") -> "np.ndarray":
@@ -237,6 +239,40 @@ def render_catch_modal(fw: int, fh: int, world: str = "sea",
                              box.w * 0.68, box.h * 0.16), TEXT)
         _fill(img, type(box)(box.x + box.w * 0.22, box.y + box.h * 0.70,
                              box.w * 0.56, box.h * 0.10), DIM)
+    return img
+
+
+def render_depth_card(fw: int, fh: int, can_cast: bool, world: str = "sea",
+                      fit: Optional[Tuple[int, int]] = None) -> "np.ndarray":
+    """The bottom-right depth card and its action row.
+
+    ``can_cast`` draws the action key green ("Start fishing"); otherwise the row
+    is what a blocked player sees - a slate key and the reason.
+    """
+    img = _blank(fw, fh, world)
+    lay = depth_layout(*_fit(fw, fh, fit))
+    card = lay["card"]
+    _fill(img, card, (15, 23, 43))
+    _fill(img, type(card)(card.x, card.y, card.w, max(0.004, card.h * 0.04)), SLATE)
+    head = lay["head"]
+    # icon plate + the depth number, then the band label underneath: text, not
+    # a filled panel.  (How much of the card is bright is what tells a reader the
+    # card is there at all, so the renderer must not flood it.)
+    _fill(img, type(head)(head.x + head.w * 0.03, head.y + head.h * 0.2,
+                          head.w * 0.11, head.h * 0.5), (56, 189, 248))
+    _fill(img, type(head)(head.x + head.w * 0.18, head.y + head.h * 0.22,
+                          head.w * 0.22, head.h * 0.24), (241, 245, 249))
+    _fill(img, type(head)(head.x + head.w * 0.18, head.y + head.h * 0.58,
+                          head.w * 0.34, head.h * 0.14), (100, 116, 139))
+    _fill(img, lay["ladder"], (51, 65, 85))                      # the depth ladder
+    action = lay["action"]
+    _fill(img, action, (15, 23, 43))
+    _fill(img, type(action)(action.x, action.y, action.w, max(0.004, action.h * 0.06)),
+          GREEN if can_cast else (71, 85, 105))
+    _fill(img, lay["key"], GREEN if can_cast else SLATE)
+    text = (203, 213, 225)
+    _fill(img, type(action)(action.x + action.w * 0.22, action.y + action.h * 0.34,
+                            action.w * (0.5 if can_cast else 0.66), action.h * 0.3), text)
     return img
 
 

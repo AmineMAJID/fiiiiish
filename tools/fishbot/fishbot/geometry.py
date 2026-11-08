@@ -294,12 +294,49 @@ def notify_layout(fw: int, fh: int, slots: int = 5) -> Dict[str, object]:
 
 
 # ── the depth / action card (bottom right) ──────────────────────────────────
+#: The depth card and the action row under it, in rem, from the stylesheet.
+_DEPTH_RIGHT = 1.25
+_DEPTH_W = 16.75
+_DEPTH_GAP = 0.4375
+_DEPTH_PAD = 0.5
+_DEPTH_ICON = 1.875
+_DEPTH_BODY_GAP = 0.375
+_DEPTH_LADDER = 0.25
+_ACTION_PAD = 0.4375
+_ACTION_KEY = 1.3125
+_ACTION_KEY_PAD = 0.5625
+
+
 def depth_layout(fw: int, fh: int) -> Dict[str, Rect]:
-    """``_column_xtsyz``: fixed, right 1.25rem, width 16.75rem."""
+    """``_column_xtsyz``: fixed, right 1.25rem, width 16.75rem.
+
+    The column is placed in script, not in CSS: ``top = max(innerHeight * 0.5,
+    trackerBottom + 12)``.  The tracker is not usually on screen, so the top of
+    the column sits at half the viewport, and the cards stack downwards: the
+    depth card, then the action row ("[E] Start fishing / <blocked reason>").
+    """
     u = rem(fw, fh)
-    w = 16.75 * u
-    card = rect((fw - 1.25 * u - w) / fw, (fh / 2.0 - 5.5 * u) / fh, w / fw, 11.0 * u / fh)
-    return {"card": card, "head": card.inset(0.03, 0.06)}
+    w = _DEPTH_W * u
+    x = fw - _DEPTH_RIGHT * u - w
+    top = fh * 0.5
+
+    card_h = 2 * _DEPTH_PAD * u + max(_DEPTH_ICON * u, 2.0 * u) + _DEPTH_BODY_GAP * u + _DEPTH_LADDER * u
+    card = rect(x / fw, top / fh, w / fw, card_h / fh)
+
+    action_top = top + card_h + _DEPTH_GAP * u
+    action_h = 2 * _ACTION_PAD * u + _ACTION_KEY * u
+    action = rect(x / fw, action_top / fh, w / fw, action_h / fh)
+    key = rect((x + _ACTION_KEY_PAD * u) / fw,
+               (action_top + _ACTION_PAD * u) / fh,
+               _ACTION_KEY * u / fw, _ACTION_KEY * u / fh)
+    return {
+        "card": card,
+        "head": rect(card.x, card.y, card.w, (max(_DEPTH_ICON * u, 2.0 * u) + 2 * _DEPTH_PAD * u) / fh),
+        "ladder": rect(card.x + _DEPTH_PAD * u / fw, (card.y2 - _DEPTH_PAD * u / fh) - _DEPTH_LADDER * u / fh,
+                       (w - 2 * _DEPTH_PAD * u) / fw, _DEPTH_LADDER * u / fh),
+        "action": action,
+        "key": key,
+    }
 
 
 # ── the "hold E to cast" helper bar (bottom centre) ─────────────────────────

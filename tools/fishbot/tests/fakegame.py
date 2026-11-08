@@ -124,6 +124,8 @@ class FakeGame:
         self.camera_offset = 0.0     # the signed "angle" the Lua would compute
         self.modal_open = False
         self.toast_error = False
+        self.show_depth = True       # the depth card is up whenever the rod is out
+        self.blocked = False         # the game refusing a cast (too deep, in a car)
         self.injector: Optional[FakeInjector] = None
 
         # results
@@ -176,6 +178,10 @@ class FakeGame:
             img = simhud.render_catch_modal(self.vw, self.vh, self.world, fit=(self.w, self.h))
         else:
             img = simhud._blank(self.vw, self.vh, self.world)
+        if self.show_depth and self.state == IDLE:
+            # rod in hand, water in front: the depth card and its action key
+            img = simhud.render_depth_card(self.vw, self.vh, not self.blocked,
+                                           self.world, fit=(self.w, self.h))
         if self.toast_error:
             toast = simhud.render_error_toast(self.vw, self.vh, self.world,
                                               fit=(self.w, self.h))
@@ -251,6 +257,10 @@ class FakeGame:
 
     # ── game logic ──────────────────────────────────────────────────────────
     def _send_cast(self) -> None:
+        if self.blocked:
+            self.mistakes.append("cast while the game was refusing it")
+            self.state = IDLE
+            return
         if self.power < 0.05:
             self.mistakes.append(f"cast refused: power {self.power:.2f}")
             self.state = IDLE

@@ -488,6 +488,72 @@ def read_error_toast(frame: Frame) -> bool:
     return False
 
 
+#: The action key's green plate: #4ade80 when the cast is allowed, #334155 when
+#: the game is refusing it (too deep, in a vehicle, near the job ped...).  The
+#: player sees one colour or the other, and so does the tool.
+ACTION_READY = (74, 222, 128)
+ACTION_BLOCKED = (51, 65, 85)
+
+
+@dataclass
+class CastGateReading:
+    """Whether the game will let a cast happen right now.
+
+    ``card``  the depth card is on screen (the player has a rod out and there is
+              water in front of them), 0..1 confidence
+    ``ready`` the action key is green: the cast would be accepted
+    ``blocked`` the action row is on screen but greyed: the game is refusing
+    """
+
+    card: float = 0.0
+    ready: bool = False
+    blocked: bool = False
+    present: bool = False
+
+    def __str__(self) -> str:
+        if self.ready:
+            state = "ready"
+        elif self.blocked:
+            state = "blocked"
+        elif self.present:
+            state = "unknown"
+        else:
+            state = "no card"
+        return (f"cast-gate {state} card={self.card:.2f} "
+                f"ready={self.ready} blocked={self.blocked}")
+
+
+def read_cast_gate(frame: Frame) -> CastGateReading:
+    """Read the depth card's action key.
+
+    This is the only honest answer to "can I cast?" that the resource publishes.
+    ``StartFishing`` runs on E only when the water probe succeeded and nothing
+    blocks it, and the HUD says so: the key badge is green (#4ade80) with
+    "Start fishing" when a cast would be accepted, and slate grey with the
+    reason when it would not.  Casting while it is grey spends an E on nothing.
+    """
+    lay = depth_layout(*frame.viewport)
+    key_roi = frame.crop(lay["key"])
+    card_roi = frame.crop(lay["card"])
+    if key_roi.size == 0 or card_roi.size == 0:
+        return CastGateReading()
+
+    key = key_roi.astype("float32") / 255.0
+    green = float(((key[:, :, 1] > 0.55) & (key[:, :, 0] < 0.55) & (key[:, :, 2] < 0.55)).mean())
+
+    # The card carries a cyan depth icon (#38bdf8) and a cyan top border.  A
+    # saturated cyan that is *not* the sea - the sea is desaturated by
+    # comparison and darker - is the card's signature, and unlike "the card is
+    # dark" it does not fire on a night sky or on a bright snowfield.
+    pixels = card_roi.shape[0] * card_roi.shape[1]
+    cyan = color_count(card_roi, (56, 189, 248), tol=0.30, sat_min=0.5, val_min=0.5)
+    card = 1.0 if pixels and (cyan / pixels) > 0.012 else 0.0
+    ready = green > 0.35
+    blocked = bool(card) and not ready
+    return CastGateReading(card=card, ready=ready, blocked=blocked,
+                           present=bool(card) or ready)
+
+
 def read_depth_card(frame: Frame) -> float:
     """0..1 confidence that the bottom-right depth/action card is on screen."""
     lay = depth_layout(*frame.viewport)

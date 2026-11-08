@@ -1,0 +1,10 @@
+# fishbot runtime dependencies.
+#
+# numpy is the only one, and it is optional: the vision layer falls back to
+# pure-Python loops without it (approximately 8x slower, which at 20 samples a
+# second still fits in the frame budget at 1080p, but not at 4K).
+#
+# Everything Windows-specific (screen capture, SendInput, hotkeys) goes through
+# ctypes on the standard library, so there is nothing else to install - no
+# pywin32, no pydirectinput, no OpenCV, no Pillow.
+numpy>=1.21
